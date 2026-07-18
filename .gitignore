@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+models/
+.pytest_cache/
+last.txt
+session-logs/
