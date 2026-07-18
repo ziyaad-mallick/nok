@@ -1,0 +1,13 @@
+{
+  "default": {"action": "type_text", "args": {"text": "sorry, I didn't catch that"}, "say": "I'm not sure what you meant."},
+  "rules": [
+    {"contains": "spotify", "response": {"action": "open_app", "args": {"name": "spotify"}, "say": "Opening Spotify."}},
+    {"contains": "notepad", "response": {"action": "open_app", "args": {"name": "notepad"}, "say": "Opening Notepad."}},
+    {"contains": "mute", "response": {"action": "media", "args": {"command": "mute"}, "say": "Muting."}},
+    {"contains": "focus", "response": {"action": "macro", "args": {"name": "focus"}, "say": "Focus mode."}},
+    {"contains": "__prose__", "mode": "prose", "response": {"action": "media", "args": {"command": "pause"}, "say": "Pausing."}},
+    {"contains": "__nojson__", "mode": "no_json"},
+    {"contains": "__timeout__", "mode": "timeout"},
+    {"contains": "__quota__", "mode": "quota"}
+  ]
+}

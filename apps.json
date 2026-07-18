@@ -1,0 +1,5 @@
+{
+  "spotify": {"launch": "spotify:", "process": "Spotify.exe"},
+  "notepad": {"launch": "notepad.exe", "process": "notepad.exe"},
+  "browser": {"launch": "https://www.google.com", "process": ""}
+}

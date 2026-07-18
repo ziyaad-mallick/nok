@@ -15,7 +15,6 @@ CI path. This module is written but intentionally not executed as part of
 tonight's build.
 """
 import argparse
-import json
 import subprocess
 import sys
 import time
@@ -24,6 +23,10 @@ from pathlib import Path
 from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from miko.jsonx import extract_last_json_block  # noqa: E402  (moved here)
+
 PROBE_RESULTS_DIR = REPO_ROOT / "probe-results"
 CALL_TIMEOUT_SECONDS = 120
 MAX_CALLS = 6
@@ -64,32 +67,6 @@ class CallResult:
     parsed_json: Optional[dict] = field(default=None)
     passed: bool = False
     fail_reason: str = ""
-
-
-def extract_last_json_block(text: str):
-    """Return the last valid top-level JSON object/array found in `text`,
-    scanning left to right past leading prose and duplicate blocks.
-
-    Returns None if no valid JSON object/array is found (including the
-    case of truncated/incomplete JSON).
-    """
-    if not text:
-        return None
-    decoder = json.JSONDecoder()
-    last = None
-    i = 0
-    n = len(text)
-    while i < n:
-        if text[i] in "{[":
-            try:
-                obj, end = decoder.raw_decode(text, i)
-                last = obj
-                i = end
-                continue
-            except json.JSONDecodeError:
-                pass
-        i += 1
-    return last
 
 
 def make_test_screenshot(dest: Path) -> Path:

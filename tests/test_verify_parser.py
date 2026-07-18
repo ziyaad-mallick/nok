@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.verify_codex import extract_last_json_block
+from miko.jsonx import extract_last_json_block
 
 
 def test_clean_json():
