@@ -22,6 +22,7 @@ Decision flow (both brains):
                                    back to the keyword matcher on quota)
 """
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -48,6 +49,43 @@ _QUOTA_MARKERS = (
     "exceeded your current",
     "insufficient_quota",
 )
+
+
+# Teach-mode codegen: MockBrain parses this marker to learn where to write the
+# skill file (kept in sync with miko.teach.skill_path_marker).
+_SKILL_PATH_RE = re.compile(r"^SKILL_PATH=(.+)$", re.MULTILINE)
+
+# Canned skill files MockBrain.codegen writes, keyed by its codegen mode. These
+# let every teach-mode / loader branch be exercised with zero spend: a valid
+# skill (happy path), a policy-violating import, a syntax error, or no file.
+_CANNED_VALID_SKILL = (
+    '"""Canned skill written by MockBrain (zero-spend codegen)."""\n'
+    "from miko import helpers\n\n"
+    'KEYWORDS = ["focus", "deep", "work"]\n\n\n'
+    "def run(ctx) -> str:\n"
+    '    ctx.helpers.media("mute")\n'
+    '    return "Focus mode on."\n'
+)
+_CANNED_BAD_IMPORT_SKILL = (
+    '"""Canned bad-import skill (violates the whitelist -> static reject)."""\n'
+    "import os\n"
+    "from miko import helpers\n\n"
+    'KEYWORDS = ["bad"]\n\n\n'
+    "def run(ctx) -> str:\n"
+    '    return os.getcwd()\n'
+)
+_CANNED_BROKEN_SYNTAX_SKILL = (
+    '"""Canned broken-syntax skill (fails to parse/import)."""\n'
+    "from miko import helpers\n\n"
+    'KEYWORDS = ["broken"]\n\n\n'
+    "def run(ctx) -> str\n"  # missing colon -> SyntaxError
+    '    return "nope"\n'
+)
+_CANNED_SKILLS = {
+    "valid": _CANNED_VALID_SKILL,
+    "bad_import": _CANNED_BAD_IMPORT_SKILL,
+    "broken_syntax": _CANNED_BROKEN_SYNTAX_SKILL,
+}
 
 
 class BrainError(Exception):
@@ -92,11 +130,16 @@ class Brain:
 class MockBrain(Brain):
     """Scripted brain for dev/test. Never calls any real model."""
 
-    def __init__(self, fixture_path=None):
+    def __init__(self, fixture_path=None, codegen_mode="valid"):
         path = Path(fixture_path) if fixture_path else _DEFAULT_MOCK_FIXTURE
         data = json.loads(path.read_text(encoding="utf-8"))
         self._default = data.get("default")
         self._rules = data.get("rules", [])
+        # codegen_mode is a str (constant) or a list consumed one per call
+        # (last value sticks) so retry-once semantics can be scripted:
+        # e.g. ["broken_syntax", "valid"] fails then succeeds on retry.
+        self.codegen_mode = codegen_mode
+        self.codegen_calls = 0
 
     def decide(self, transcript: str, context: dict | None = None) -> dict:
         rule = self._match_rule(transcript)
@@ -123,6 +166,44 @@ class MockBrain(Brain):
         # enforced on the mock exactly as it would be on the real model.
         payload = rule.get("response", self._default)
         return validate_action(payload)
+
+    def codegen(self, prompt: str) -> str:
+        """Simulate Codex writing a skill file (zero spend). The current
+        codegen mode decides what gets written to the SKILL_PATH in `prompt`:
+        a valid skill, a bad-import skill, a broken-syntax skill, or (mode
+        "nothing") no file at all.
+        """
+        self.codegen_calls += 1
+        mode = self._next_codegen_mode()
+        target = self._extract_target_path(prompt)
+
+        if mode == "nothing":
+            return "I wasn't able to write the skill."
+        if target is None:
+            return "no SKILL_PATH found in the prompt"
+
+        content = _CANNED_SKILLS.get(mode)
+        if content is None:
+            raise ValueError(f"unknown codegen mode {mode!r}")
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return f"wrote {target}"
+
+    def _next_codegen_mode(self) -> str:
+        mode = self.codegen_mode
+        if isinstance(mode, list):
+            if not mode:
+                return "valid"
+            if len(mode) == 1:
+                return mode[0]
+            return mode.pop(0)  # consume; last value sticks
+        return mode
+
+    @staticmethod
+    def _extract_target_path(prompt: str):
+        m = _SKILL_PATH_RE.search(prompt or "")
+        return m.group(1).strip() if m else None
 
     def _match_rule(self, transcript: str) -> dict:
         low = (transcript or "").lower()
