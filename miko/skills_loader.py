@@ -120,7 +120,10 @@ class SkillsLoader:
             if already and self._mtimes.get(key) == mtime:
                 continue  # unchanged since last scan -> no re-import
             try:
-                self.load_path(path)
+                # scan() runs on every wake + at startup; it must NEVER trigger
+                # a codegen "fix" (that would spend Codex quota on a broken file
+                # each wake). Only teach-mode may repair. (S2)
+                self.load_path(path, allow_fix=False)
             except SkillLoadError as exc:
                 self.errors[path.stem] = str(exc)
                 self.skills.pop(path.stem, None)
@@ -135,17 +138,20 @@ class SkillsLoader:
             del self.errors[name]
         return self.manifest()
 
-    def load_path(self, path, behavior=None) -> LoadedSkill:
+    def load_path(self, path, behavior=None, allow_fix=True) -> LoadedSkill:
         """Static-check + import + validate one skill, with ONE codegen retry.
 
         Returns the LoadedSkill on success (and registers it). Raises
         SkillLoadError if it is still broken after the single retry.
+        `allow_fix=False` disables the codegen repair entirely (used by scan()
+        so a broken skill never spends quota on every wake -- only teach-mode
+        repairs).
         """
         path = Path(path)
         try:
             skill = self._static_import_validate(path)
         except SkillLoadError as first_error:
-            if self.brain is None:
+            if self.brain is None or not allow_fix:
                 raise
             log_event("skill_retry", skill=path.stem, reason=str(first_error))
             self._codegen_fix(path, first_error, behavior)

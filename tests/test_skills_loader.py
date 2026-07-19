@@ -128,24 +128,38 @@ def test_template_and_dunder_files_skipped(tmp_path):
 
 
 # -- retry path (brain present) -------------------------------------------
+# The codegen retry is a TEACH-mode affordance: it fires via load_path()
+# (allow_fix defaults True). scan() must NEVER trigger it (S2) -- see below.
 
 def test_syntax_error_retry_then_giveup(tmp_path):
-    _write(tmp_path, "broken.py", BROKEN_SYNTAX)
+    p = _write(tmp_path, "broken.py", BROKEN_SYNTAX)
     brain = MockBrain(codegen_mode="broken_syntax")  # rewrites broken again
     loader = SkillsLoader(skills_dir=tmp_path, brain=brain)
-    loader.scan()
+    with pytest.raises(SkillLoadError):
+        loader.load_path(p)  # teach entry: one repair attempt, then give up
     assert "broken" not in loader.skills
-    assert "broken" in loader.errors
-    assert brain.codegen_calls == 1  # one repair attempt, then give up
+    assert brain.codegen_calls == 1
 
 
 def test_syntax_error_retry_then_success(tmp_path):
-    _write(tmp_path, "broken.py", BROKEN_SYNTAX)
+    p = _write(tmp_path, "broken.py", BROKEN_SYNTAX)
     brain = MockBrain(codegen_mode="valid")  # repair writes a valid skill
     loader = SkillsLoader(skills_dir=tmp_path, brain=brain)
-    loader.scan()
+    skill = loader.load_path(p)
+    assert skill.name == "broken"
     assert "broken" in loader.skills
     assert brain.codegen_calls == 1
+
+
+def test_scan_never_triggers_codegen(tmp_path):
+    # S2: a broken skill file must not burn a Codex codegen call on every wake.
+    _write(tmp_path, "broken.py", BROKEN_SYNTAX)
+    brain = MockBrain(codegen_mode="valid")
+    loader = SkillsLoader(skills_dir=tmp_path, brain=brain)
+    loader.scan()
+    assert brain.codegen_calls == 0
+    assert "broken" in loader.errors
+    assert "broken" not in loader.skills
 
 
 def test_load_path_without_brain_raises(tmp_path):
