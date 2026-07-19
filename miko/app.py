@@ -115,6 +115,19 @@ class App:
         self._busy_notified = False
         try:
             return self._pipeline(pattern)
+        except Exception as exc:
+            # A crash in any subsystem (STT, teach codegen, dispatch) must not
+            # unwind into detector.run() and kill the daemon thread -- that
+            # leaves Miko silently deaf. Recover: one bad beat, then re-arm.
+            log_event("pipeline_error", error=str(exc))
+            self.set_state(ERROR, detail=f"pipeline error: {exc}")
+            try:
+                self._chime("error")
+                self._say("Something went wrong.")
+            except Exception:
+                pass
+            self._last_result = "pipeline error"
+            return "pipeline error"
         finally:
             self._busy = False
             self._set_busy_gate(False)

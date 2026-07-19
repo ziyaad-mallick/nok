@@ -235,27 +235,34 @@ class KnockDetector:
         bs = self.config.blocksize
         consumed = 0
         while not stop_event.is_set():
-            total = ring_buffer.total_written
-            available = total - consumed
-            if available < bs:
-                now = total / sr
-                self._emit(ioi.poll(now), now, on_wake)
-                time.sleep(idle_sleep)
-                continue
+            try:
+                total = ring_buffer.total_written
+                available = total - consumed
+                if available < bs:
+                    now = total / sr
+                    self._emit(ioi.poll(now), now, on_wake)
+                    time.sleep(idle_sleep)
+                    continue
 
-            n_blocks = available // bs
-            want = n_blocks * bs
-            chunk = ring_buffer.read_last(want / sr)
-            offset = total - chunk.size  # sample index of chunk[0]
-            end = chunk.size - bs + 1
-            for i in range(0, end, bs):
-                block = chunk[i:i + bs]
-                now = (offset + i + bs) / sr
-                onset = self.process_block(block, now)
-                if onset is not None:
-                    self._emit(ioi.feed(onset), now, on_wake)
-                self._emit(ioi.poll(now), now, on_wake)
-            consumed = _consumed_after_chunk(total, ring_buffer.total_written, sr)
+                n_blocks = available // bs
+                want = n_blocks * bs
+                chunk = ring_buffer.read_last(want / sr)
+                offset = total - chunk.size  # sample index of chunk[0]
+                end = chunk.size - bs + 1
+                for i in range(0, end, bs):
+                    block = chunk[i:i + bs]
+                    now = (offset + i + bs) / sr
+                    onset = self.process_block(block, now)
+                    if onset is not None:
+                        self._emit(ioi.feed(onset), now, on_wake)
+                    self._emit(ioi.poll(now), now, on_wake)
+                consumed = _consumed_after_chunk(total, ring_buffer.total_written, sr)
+            except Exception as exc:
+                # The detector thread must survive anything (a subsystem raising
+                # up through on_wake, a transient buffer error) -- if it dies,
+                # Miko goes silently deaf. Log and keep looping.
+                log_event("detector_loop_error", error=str(exc))
+                time.sleep(idle_sleep)
 
     def _emit(self, decision, now, on_wake):
         if decision in (DOUBLE_TAP, TRIPLE_TAP):

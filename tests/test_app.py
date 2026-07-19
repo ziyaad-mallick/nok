@@ -123,6 +123,43 @@ def test_wake_listen_act_happy_path():
     assert app.state == SLEEPING
 
 
+# -- pipeline crash recovery (S1: detector thread must survive) -----------
+
+class _RaisingTranscriber:
+    def transcribe(self, audio):
+        raise RuntimeError("stt exploded")
+
+
+def test_pipeline_exception_recovers_and_returns_to_sleeping():
+    app, states, chimes, spoken, det = make_app(
+        vad=FakeVad([AUDIO]),
+        transcriber=_RaisingTranscriber(),
+    )
+    # Must NOT raise: handle_wake runs on the detector thread, and an uncaught
+    # exception there kills it (Miko goes silently deaf).
+    result = app.handle_wake("DOUBLE_TAP")
+    assert result == "pipeline error"
+    assert app.state == SLEEPING
+    assert ERROR in states
+    assert states[-1] == SLEEPING
+    assert "error" in chimes
+
+
+def test_teach_exception_recovers():
+    def boom(*a, **k):
+        raise RuntimeError("teach exploded")
+
+    app, states, chimes, spoken, det = make_app(
+        vad=FakeVad([AUDIO]),
+        transcriber=FakeTranscriber([("learn a new trick: do x", GOOD)]),
+        teach_fn=boom,
+    )
+    result = app.handle_wake("DOUBLE_TAP")
+    assert result == "pipeline error"
+    assert app.state == SLEEPING
+    assert ERROR in states
+
+
 # -- 5s no-speech ---------------------------------------------------------
 
 def test_no_speech_goes_back_to_sleep():
