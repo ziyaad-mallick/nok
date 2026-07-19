@@ -33,6 +33,15 @@ TAP_FLOOR_FRAC = 0.6   # ...but never above this fraction of the weakest tap
 ATTACK_MARGIN = 0.6    # keep attack threshold below the weakest tap's attack
 MIN_ATTACK = 2.0       # hard minimum so noise can't sneak under a tiny threshold
 CENTROID_MARGIN = 1.3  # if typing overlaps taps, widen the tap band by this
+# When typing is NOT centroid-separable from taps (low-frequency typing -- firm
+# presses on centre keys read as low broadband thumps, not high clicks), centroid
+# can't reject it. Separate by amplitude instead: a chassis knock couples far more
+# energy into the mic than a keystroke. Put the floor above loud typing (this pct
+# of typing-onset peaks) but below the taps (a high percentile of tap-onset
+# peaks -- the loud clipped events -- which is robust to the low-amplitude decay
+# tails that drag the median and minimum down).
+TYPING_SEP_PCTL = 95
+TAP_REF_PCTL = 90
 
 CALIBRATION_PATH = Path(__file__).resolve().parent.parent / "calibration.json"
 
@@ -123,6 +132,13 @@ def compute_thresholds(tap_samples, silence_samples, typing_samples,
             centroid_max = tap_centroid_hi * CENTROID_MARGIN
     else:
         centroid_max = tap_centroid_hi * CENTROID_MARGIN
+        # Centroid can't separate this typing from taps -> lean on amplitude.
+        if typ_mask.any():
+            typing_peak_hi = float(np.percentile(typ["peaks"][typ_mask], TYPING_SEP_PCTL))
+            tap_ref = float(np.percentile(tap_peaks, TAP_REF_PCTL))
+            if tap_ref > typing_peak_hi:  # taps really are the louder population
+                amp_sep = 0.5 * (typing_peak_hi + tap_ref)
+                amplitude_floor = max(amplitude_floor, min(amp_sep, tap_ref * 0.9))
 
     return {
         "attack_ratio": round(attack_ratio, 4),

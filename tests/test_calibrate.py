@@ -96,6 +96,49 @@ def test_amplitude_floor_between_ambient_and_taps():
     assert ambient < th["amplitude_floor"] < weakest_tap
 
 
+def _loud_tap_recording(seed=6):
+    rec = synth_silence(int(10.0 * SR), seed=seed)
+    for k in range(10):
+        _place(rec, synth_knock(SR, amp=0.95, seed=400 + k), int((0.5 + k * 0.9) * SR))
+    return rec
+
+
+def _lowcentroid_typing_recording(seed=7):
+    """Typing that is LOW-frequency (firm centre-key presses) and quieter than
+    a chassis knock -- reproduces the real-recording case where centroid cannot
+    separate typing from taps, so amplitude must."""
+    rec = synth_silence(int(10.0 * SR), seed=seed)
+    pos, k = 0.5, 0
+    while pos < 9.5:
+        _place(rec, synth_knock(SR, amp=0.35, seed=300 + k), int(pos * SR))
+        pos += 0.15
+        k += 1
+    return rec
+
+
+def test_lowcentroid_typing_separated_by_amplitude():
+    silence = synth_silence(int(10.0 * SR), seed=3)
+    th = compute_thresholds(_loud_tap_recording(), silence, _lowcentroid_typing_recording())
+    cfg = DetectorConfig.from_calibration({"samplerate": SR, "thresholds": th})
+
+    # amplitude floor must rise above the (low-centroid) typing level to reject it
+    assert th["amplitude_floor"] > 0.35
+
+    # a loud knock is still accepted
+    tap_track = synth_silence(int(1.0 * SR), seed=30)
+    _place(tap_track, synth_knock(SR, amp=0.95, seed=500), int(0.3 * SR))
+    assert _run(KnockDetector(cfg), tap_track) >= 1
+
+    # low-centroid typing is rejected (it would false-wake at the stock floor)
+    typ_track = synth_silence(int(2.0 * SR), seed=31)
+    pos, k = 0.3, 0
+    while pos < 1.7:
+        _place(typ_track, synth_knock(SR, amp=0.35, seed=600 + k), int(pos * SR))
+        pos += 0.15
+        k += 1
+    assert _run(KnockDetector(cfg), typ_track) == 0
+
+
 def test_no_taps_raises():
     import pytest
     silence = synth_silence(int(10.0 * SR), seed=3)
