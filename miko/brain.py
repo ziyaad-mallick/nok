@@ -28,6 +28,7 @@ import tempfile
 from pathlib import Path
 
 from .actions import TOOLBOX_PROMPT
+from .codex_path import resolve_codex
 from .jsonx import ContractError, extract_last_json_block, validate_action
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -221,7 +222,6 @@ class CodexBrain(Brain):
 
     TIMEOUT_INTENT = 60
     TIMEOUT_CODEGEN = 300
-    CODEX_CMD = ("codex", "exec")
 
     def decide(self, transcript: str, context: dict | None = None) -> dict:
         context = context or {}
@@ -240,7 +240,7 @@ class CodexBrain(Brain):
     # -- internal --------------------------------------------------------
 
     def _build_command(self, prompt: str, output_file: str, image):
-        cmd = list(self.CODEX_CMD) + [prompt, "-o", output_file]
+        cmd = resolve_codex() + ["exec", prompt, "-o", output_file]
         if image:
             cmd += ["--image", str(image)]
         return cmd
@@ -254,7 +254,8 @@ class CodexBrain(Brain):
             cmd = self._build_command(prompt, output_file, image)
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=timeout
+                    cmd, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=timeout
                 )
             except subprocess.TimeoutExpired:
                 # subprocess.run already killed the child on timeout.

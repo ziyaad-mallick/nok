@@ -15,8 +15,6 @@ CI path. This module is written but intentionally not executed as part of
 tonight's build.
 """
 import argparse
-import os
-import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +25,7 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from miko.codex_path import resolve_codex  # noqa: E402
 from miko.jsonx import extract_last_json_block  # noqa: E402  (moved here)
 
 PROBE_RESULTS_DIR = REPO_ROOT / "probe-results"
@@ -83,52 +82,8 @@ def make_test_screenshot(dest: Path) -> Path:
     return dest
 
 
-_CODEX_CMD: Optional[list] = None
-
-
-def codex_cmd() -> list:
-    """Resolve the codex CLI to a runnable argv prefix.
-
-    On Windows, npm installs codex as a .cmd shim that subprocess.run cannot
-    launch without a shell (WinError 2). Prefer the real vendored codex.exe so
-    JSON prompt args pass through without cmd.exe re-quoting. Honors a CODEX_BIN
-    env override.
-    """
-    global _CODEX_CMD
-    if _CODEX_CMD is not None:
-        return _CODEX_CMD
-
-    override = os.environ.get("CODEX_BIN")
-    if override and Path(override).exists():
-        _CODEX_CMD = [override]
-        return _CODEX_CMD
-
-    exe = shutil.which("codex.exe")
-    if exe:
-        _CODEX_CMD = [exe]
-        return _CODEX_CMD
-
-    generic = shutil.which("codex")
-    if generic:
-        if os.name == "nt" and generic.lower().endswith((".cmd", ".bat")):
-            for cand in Path(generic).parent.glob(
-                "node_modules/@openai/codex/node_modules/@openai/codex-*/vendor/*/bin/codex.exe"
-            ):
-                _CODEX_CMD = [str(cand)]
-                return _CODEX_CMD
-            _CODEX_CMD = ["cmd", "/c", generic]
-            return _CODEX_CMD
-        _CODEX_CMD = [generic]
-        return _CODEX_CMD
-
-    raise FileNotFoundError(
-        "codex CLI not found on PATH. Install with `npm i -g @openai/codex`, run "
-        "`codex login`, or set CODEX_BIN to the codex executable path."
-    )
-
-
 def build_command(call_num: int, prompt: str, extra_args: list, output_file: Path, image_file: Optional[Path]) -> list:
-    cmd = [*codex_cmd(), "exec", prompt, "-o", str(output_file)]
+    cmd = [*resolve_codex(), "exec", prompt, "-o", str(output_file)]
     if image_file is not None:
         cmd += ["--image", str(image_file)]
     cmd += extra_args
@@ -197,7 +152,7 @@ def run_call(call_num: int, prompt: str, extra_args: list, needs_image: bool, ou
 
 def print_codex_version() -> None:
     try:
-        proc = subprocess.run([*codex_cmd(), "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        proc = subprocess.run([*resolve_codex(), "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         print(f"codex CLI version: {proc.stdout.strip() or proc.stderr.strip()}")
     except Exception as exc:
         print(f"codex CLI version: FAILED ({exc})")
