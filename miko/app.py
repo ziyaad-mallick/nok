@@ -427,6 +427,8 @@ def main(argv=None):
                         help="override the input device index")
     parser.add_argument("--calibrate", action="store_true",
                         help="run the knock calibration wizard and exit")
+    parser.add_argument("--no-overlay", action="store_true",
+                        help="run headless without the on-screen overlay")
     args = parser.parse_args(argv)
 
     if args.calibrate:
@@ -445,16 +447,28 @@ def main(argv=None):
         daemon=True,
     )
     worker.start()
+
+    overlay = None
+    if not args.no_overlay:
+        from .overlay import Overlay  # lazy import (keeps headless imports cheap)
+        overlay = Overlay()
+        app.observer = overlay.set_state  # App already supports observer
+
     app.set_state(SLEEPING, detail="ready — knock twice")
     print("Miko is listening. Knock twice on the chassis. Ctrl-C to quit.")
     try:
-        while True:
-            time.sleep(0.2)
+        if overlay is not None:
+            overlay.run()
+        else:
+            while True:
+                time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     finally:
         stop_event.set()
         capture.stop()
+        if overlay is not None:
+            overlay.close()
     return 0
 
 
