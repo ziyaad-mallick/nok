@@ -1,5 +1,8 @@
 {
   "spotify": {"launch": "spotify:", "process": "Spotify.exe"},
   "notepad": {"launch": "notepad.exe", "process": "notepad.exe"},
-  "browser": {"launch": "https://www.google.com", "process": ""}
+  "browser": {"launch": "https://www.google.com", "process": ""},
+  "calculator": {"launch": "calc.exe", "process": "Calculator.exe"},
+  "explorer": {"launch": "explorer.exe", "process": "explorer.exe"},
+  "settings": {"launch": "ms-settings:", "process": ""}
 }
