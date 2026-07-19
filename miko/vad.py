@@ -36,6 +36,7 @@ FRAME_MS = FRAME_SAMPLES / SAMPLE_RATE * 1000.0
 
 NO_SPEECH_TIMEOUT_MS = 5000.0   # wake with no usable command
 TRAILING_SILENCE_MS = 800.0     # end-of-utterance
+MAX_UTTERANCE_MS = 12000.0      # hard cap: never capture forever (freeze guard)
 
 # Sentinel returned when the wake produced no speech within the timeout.
 NO_COMMAND = object()
@@ -99,6 +100,10 @@ class _VadBase:
                     silence_ms += FRAME_MS
                     if silence_ms >= TRAILING_SILENCE_MS:
                         break
+                # Safety valve: unbroken "speech" (music/chatter/floor pathology)
+                # must never freeze Miko in LISTENING forever -> cut the utterance.
+                if len(collected) * FRAME_MS >= MAX_UTTERANCE_MS:
+                    break
 
         if not speech_started:
             return NO_COMMAND
@@ -113,11 +118,20 @@ class EnergyVad(_VadBase):
     doesn't pull it up.
     """
 
-    def __init__(self, threshold_factor=3.0, floor_alpha=0.95, floor_min=1e-4):
+    def __init__(self, threshold_factor=3.0, floor_alpha=0.95, floor_min=1e-4,
+                 warmup_frames=4):
         self.threshold_factor = threshold_factor
         self.floor_alpha = floor_alpha
         self.floor_min = floor_min
+        self.warmup_frames = warmup_frames
         self._noise_floor = None
+        self._warmup = []
+
+    def reset(self) -> None:
+        """Re-seed per utterance (called by endpoint()) so a prior utterance's
+        floor doesn't carry over."""
+        self._noise_floor = None
+        self._warmup = []
 
     @staticmethod
     def _rms(frame) -> float:
@@ -129,7 +143,15 @@ class EnergyVad(_VadBase):
     def is_speech(self, frame) -> bool:
         rms = self._rms(frame)
         if self._noise_floor is None:
-            self._noise_floor = max(rms, self.floor_min)
+            # Seed the floor from the QUIETEST of the first few frames, not a
+            # single frame: a user who starts talking the instant the chime ends
+            # can't poison the floor to speech level (which would then read every
+            # later frame as silence -> guaranteed NO_COMMAND).
+            self._warmup.append(rms)
+            if len(self._warmup) < self.warmup_frames:
+                return False
+            self._noise_floor = max(min(self._warmup), self.floor_min)
+            self._warmup = []
             return False
         threshold = max(self._noise_floor * self.threshold_factor, self.floor_min)
         speaking = rms > threshold

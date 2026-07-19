@@ -92,6 +92,28 @@ def test_endpoint_captures_utterance_on_trailing_silence():
     assert audio.shape[0] == expected_frames * FRAME_SAMPLES
 
 
+def test_endpoint_caps_runaway_utterance():
+    from miko.vad import MAX_UTTERANCE_MS
+    # "speech" that never stops must break at the cap, not loop forever.
+    n = int(MAX_UTTERANCE_MS / FRAME_MS) + 50
+    vad = _ScriptedVad([True] * n)
+    audio = vad.endpoint(_frames(n))
+    assert audio is not NO_COMMAND
+    cap_frames = int(MAX_UTTERANCE_MS / FRAME_MS)
+    assert audio.shape[0] <= (cap_frames + 1) * FRAME_SAMPLES
+
+
+def test_energy_vad_warmup_ignores_a_loud_first_frame():
+    # A loud transient in the FIRST warmup frame (e.g. the chime tail) must not
+    # set the noise floor high: the quieter following frames define it, so real
+    # speech afterward is still detected. (Old single-frame seed would poison.)
+    vad = EnergyVad()
+    vad.is_speech(_speech())        # loud first frame
+    for _ in range(3):
+        vad.is_speech(_silence())   # quieter frames complete the warmup
+    assert vad.is_speech(_speech()) is True
+
+
 def test_endpoint_silence_gap_shorter_than_800ms_does_not_end():
     short_gap = int(TRAILING_SILENCE_MS / FRAME_MS) - 2  # under threshold
     flags = [True] + [False] * short_gap + [True, True] + \
