@@ -5,3 +5,4 @@ models/
 .pytest_cache/
 last.txt
 session-logs/
+probe-results/
