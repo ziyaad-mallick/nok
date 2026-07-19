@@ -11,6 +11,21 @@ from miko.vad import (
 )
 
 
+def test_endpoint_resets_streaming_state_at_start():
+    calls = {"reset": 0}
+
+    class _V(_VadBase):
+        def reset(self):
+            calls["reset"] += 1
+
+        def is_speech(self, frame):
+            return False
+
+    out = _V().endpoint(iter([]))  # empty stream -> NO_COMMAND
+    assert calls["reset"] == 1
+    assert out is NO_COMMAND
+
+
 def _silence():
     return np.zeros(FRAME_SAMPLES, dtype=np.float32)
 

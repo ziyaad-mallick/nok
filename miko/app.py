@@ -129,10 +129,13 @@ class App:
 
         audio = self._listen()
         if audio is NO_COMMAND:
+            log_event("no_speech", stage="listen")
             self._chime("back_to_sleep")
             return "went back to sleep"
 
         text, info = self.transcriber.transcribe(audio)
+        log_event("transcript", text=text,
+                  confidence=round((info or {}).get("confidence", 0.0), 3))
         text, ok = self._resolve_transcript(text, info)
         if not ok:
             return "didn't catch that"

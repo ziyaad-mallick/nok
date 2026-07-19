@@ -99,6 +99,24 @@ class DetectorConfig:
             return cls.from_calibration(json.load(f))
 
 
+WAKE_BLOCK_DRAIN_S = 0.5  # buffer growth above this during a chunk == a wake ran
+
+
+def _consumed_after_chunk(total_before: int, total_now: int, sr: int) -> int:
+    """Decide the new `consumed` pointer after processing one chunk.
+
+    A wake runs the whole listen/act pipeline synchronously on the detector
+    thread; meanwhile the capture thread keeps filling the buffer with the
+    chime, the spoken command, and TTS. Resuming from `total_before` would
+    replay all of that through the classifier and mis-read the user's own voice
+    as fresh knocks (self-retrigger). When the buffer grew by seconds we were
+    blocked in a wake, so discard that backlog; otherwise advance normally.
+    """
+    if total_now - total_before > int(WAKE_BLOCK_DRAIN_S * sr):
+        return total_now
+    return total_before
+
+
 class KnockDetector:
     """Stateful per-block knock classifier with playback/BUSY gating."""
 
@@ -237,7 +255,7 @@ class KnockDetector:
                 if onset is not None:
                     self._emit(ioi.feed(onset), now, on_wake)
                 self._emit(ioi.poll(now), now, on_wake)
-            consumed = total
+            consumed = _consumed_after_chunk(total, ring_buffer.total_written, sr)
 
     def _emit(self, decision, now, on_wake):
         if decision in (DOUBLE_TAP, TRIPLE_TAP):

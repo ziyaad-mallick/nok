@@ -70,6 +70,11 @@ class _VadBase:
         """Consume `frames` (iterable of float32 arrays) and return either the
         captured utterance (np.ndarray) or NO_COMMAND.
         """
+        # Start each utterance from clean streaming state so stale recurrent
+        # state from a prior wake can't suppress speech detection.
+        reset = getattr(self, "reset", None)
+        if callable(reset):
+            reset()
         collected = []
         speech_started = False
         waited_ms = 0.0

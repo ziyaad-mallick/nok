@@ -184,6 +184,17 @@ def test_simple_mode_wakes_on_high_centroid_spike():
 
 # -- compute budget --------------------------------------------------------
 
+def test_consumed_drains_backlog_after_a_wake():
+    from miko.detector import _consumed_after_chunk
+    sr = 16000
+    # normal fast chunk: buffer barely moved -> advance to where we started
+    assert _consumed_after_chunk(1000, 1000, sr) == 1000
+    assert _consumed_after_chunk(1000, 1000 + 512, sr) == 1000  # ~1 block jitter
+    # a wake blocked us for seconds: discard the backlog captured meanwhile
+    blocked = 1000 + int(2.0 * sr)
+    assert _consumed_after_chunk(1000, blocked, sr) == blocked
+
+
 def test_per_block_compute_under_budget():
     det = KnockDetector()
     base = synth_silence(int(2.0 * SR), seed=12)
