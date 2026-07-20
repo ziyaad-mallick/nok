@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so `pytest` (bare console script) imports the
+# `miko` package the same way `python -m pytest` does. Without this, a fresh
+# clone that runs `pytest` hits ModuleNotFoundError: No module named 'miko'.
+pythonpath = ["."]
+testpaths = ["tests"]
