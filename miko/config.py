@@ -17,6 +17,8 @@ from pathlib import Path
 
 from .jsonx import ACTION_WHITELIST
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 # Actions a macro step is allowed to invoke: the whitelist minus the two
 # indirection actions (a macro of macros / skills is rejected up front).
 MACRO_STEP_ACTIONS = tuple(a for a in ACTION_WHITELIST if a not in ("macro", "skill"))
@@ -78,6 +80,12 @@ def load_macros(path) -> dict:
     return data
 
 
-def load_config(apps_path="apps.json", macros_path="macros.json"):
-    """Load + validate both config files. Returns (apps, macros)."""
+def load_config(apps_path=None, macros_path=None):
+    """Load + validate both config files. Returns (apps, macros).
+
+    Defaults are anchored to the repo root (not cwd) so `python -m miko` works
+    from any working directory.
+    """
+    apps_path = apps_path if apps_path is not None else _REPO_ROOT / "apps.json"
+    macros_path = macros_path if macros_path is not None else _REPO_ROOT / "macros.json"
     return load_apps(apps_path), load_macros(macros_path)

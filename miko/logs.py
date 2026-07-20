@@ -11,6 +11,9 @@ import os
 import queue
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _logger = logging.getLogger("miko.session")
 _logger.setLevel(logging.INFO)
@@ -46,12 +49,18 @@ class _JsonlFileHandler(logging.Handler):
             super().close()
 
 
-def init_session_logging(log_dir: str = "session-logs") -> str:
-    """Idempotent: sets up the queue + listener + file on first call."""
+def init_session_logging(log_dir=None) -> str:
+    """Idempotent: sets up the queue + listener + file on first call.
+
+    Defaults to <repo>/session-logs (not cwd) so logs land in one place no
+    matter where `python -m miko` is launched from.
+    """
     global _listener, _queue, _log_path
     with _init_lock:
         if _listener is not None:
             return _log_path
+        if log_dir is None:
+            log_dir = str(_REPO_ROOT / "session-logs")
         os.makedirs(log_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         _log_path = os.path.join(log_dir, f"session-{ts}.jsonl")
