@@ -19,7 +19,7 @@ def _model_in(state, detail="", now=T0):
 def test_sleeping_mode():
     v = _model_in("SLEEPING", "ready — knock twice").view(T0)
     assert v["mode"] == "SLEEPING"
-    assert v["accent"] == "#64748B"
+    assert v["accent"] == "#726A5C"
     assert v["title"] == "MIKO"
     assert v["expanded"] is False
 
@@ -27,7 +27,7 @@ def test_sleeping_mode():
 def test_listening_mode():
     v = _model_in("LISTENING", "woke on DOUBLE_TAP").view(T0)
     assert v["mode"] == "LISTENING"
-    assert v["accent"] == "#22D3EE"
+    assert v["accent"] == "#3FD1C0"
     assert v["title"] == "Listening"
     assert v["expanded"] is False
 
@@ -35,7 +35,7 @@ def test_listening_mode():
 def test_thinking_mode():
     v = _model_in("THINKING", "open spotify").view(T0)
     assert v["mode"] == "THINKING"
-    assert v["accent"] == "#A78BFA"
+    assert v["accent"] == "#9B80E8"
     assert v["title"] == "Thinking"
     assert v["expanded"] is True
 
@@ -43,7 +43,7 @@ def test_thinking_mode():
 def test_acting_mode():
     v = _model_in("ACTING", "open_app").view(T0)
     assert v["mode"] == "ACTING"
-    assert v["accent"] == "#34D399"
+    assert v["accent"] == "#5BC98A"
     assert v["title"] == "Acting"
     assert v["expanded"] is True
 
@@ -51,7 +51,7 @@ def test_acting_mode():
 def test_teaching_mode():
     v = _model_in("TEACHING", "learn a new trick: greet").view(T0)
     assert v["mode"] == "TEACHING"
-    assert v["accent"] == "#F59E0B"
+    assert v["accent"] == "#E8A83D"
     assert v["title"] == "Learning a new trick"
     assert v["expanded"] is True
 
@@ -59,7 +59,7 @@ def test_teaching_mode():
 def test_error_mode():
     v = _model_in("ERROR", "brain timed out").view(T0)
     assert v["mode"] == "ERROR"
-    assert v["accent"] == "#F87171"
+    assert v["accent"] == "#E1604A"
     assert v["title"] == "Something broke"
     assert v["expanded"] is True
 
@@ -71,7 +71,7 @@ def test_done_mode():
     m.apply("SLEEPING", "cycle complete", T0 + 1.0)
     v = m.view(T0 + 1.5)
     assert v["mode"] == "DONE"
-    assert v["accent"] == "#34D399"
+    assert v["accent"] == "#5BC98A"
     assert v["title"] == "Done"
     assert v["expanded"] is True
 
@@ -152,7 +152,7 @@ def test_teaching_to_sleeping_is_done():
 def test_unknown_state_is_neutral_card():
     v = _model_in("WAT", "???").view(T0)
     assert v["mode"] == "NEUTRAL"
-    assert v["accent"] == "#8B93A7"
+    assert v["accent"] == "#8C8175"
     # a neutral card renders without raising and stays compact
     assert v["expanded"] is False
 

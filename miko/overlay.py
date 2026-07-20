@@ -25,25 +25,28 @@ import time
 from .logs import log_event
 
 # ---------------------------------------------------------------------------
-# Design tokens
+# Design tokens — "Ember": a warm, muted family (cooling ash -> glowing coal)
+# instead of a stock UI-kit swatch per state. One coherent value/chroma
+# curve so every accent still reads as part of the same object.
 # ---------------------------------------------------------------------------
-PANEL = "#0E1116"
-TEXT_PRIMARY = "#F5F7FA"
-TEXT_SECONDARY = "#8B93A7"
-TEXT_TRANSCRIPT = "#D7DCE5"
-CHIP_BG = "#15291F"
+PANEL = "#15120E"
+TEXT_PRIMARY = "#F4EEE4"
+TEXT_SECONDARY = "#A79C8C"
+TEXT_TRANSCRIPT = "#E6DCC8"
+SHADOW = "#0A0705"       # crisp offset drop-shadow sliver (no blur on Canvas)
+CORNER_RADIUS = 24       # near-full pill at compact height, soft card at expanded
 KEY = "#010203"  # transparent-color key, never used in the palette
 
 # Per-state accent — one hue each, never reused.
 _ACCENTS = {
-    "SLEEPING": "#64748B",
-    "LISTENING": "#22D3EE",
-    "THINKING": "#A78BFA",
-    "ACTING": "#34D399",
-    "TEACHING": "#F59E0B",
-    "ERROR": "#F87171",
-    "DONE": "#34D399",
-    "NEUTRAL": "#8B93A7",
+    "SLEEPING": "#726A5C",   # cooling ash — idle
+    "LISTENING": "#3FD1C0",  # bright teal — ears open
+    "THINKING": "#9B80E8",   # amethyst — turning it over
+    "ACTING": "#5BC98A",     # jade — doing it
+    "TEACHING": "#E8A83D",   # warm gold — a spark of new skill
+    "ERROR": "#E1604A",      # glowing coal-red — something's wrong
+    "DONE": "#5BC98A",       # same hue as ACTING — landed cleanly
+    "NEUTRAL": "#8C8175",
 }
 
 _THINK_VERBS = ["Thinking", "Consulting codex", "Planning the action"]
@@ -310,14 +313,21 @@ class OverlayModel:
             scale = 1.075 + 0.075 * math.sin(2 * math.pi * elapsed / 1.0)
             return {"kind": "pulse", "phase": elapsed % 1.0, "scale": scale}
         if mode == "THINKING":
-            angle = (elapsed / 1.2 * 360.0) % 360.0
-            return {"kind": "arc", "phase": angle, "scale": 1.0}
+            # a slower revolution with a breathing arc-length (material-style
+            # spinner) reads as deliberate work, not a frantic spin — this can
+            # be on screen for 17-38s so it has to stay calm and alive.
+            angle = (elapsed / 1.6 * 360.0) % 360.0
+            extent = 70.0 + 50.0 * (0.5 + 0.5 * math.sin(2 * math.pi * elapsed / 2.4))
+            return {"kind": "arc", "phase": angle, "scale": 1.0, "extent": extent}
         if mode == "ACTING":
             scale = 1.0 + 0.3 * max(0.0, 1.0 - elapsed / 0.12)
             return {"kind": "flash", "phase": _clamp(elapsed / 0.12), "scale": scale}
         if mode == "TEACHING":
-            scale = 1.04 + 0.04 * math.sin(2 * math.pi * elapsed / 1.6)
-            return {"kind": "write", "phase": (elapsed % 1.6) / 1.6, "scale": scale}
+            # a slow breathe layered with a faster, smaller flicker — reads as
+            # a candle/spark rather than the uniform breathe used for SLEEPING.
+            base = 1.05 + 0.035 * math.sin(2 * math.pi * elapsed / 1.7)
+            flicker = 0.015 * math.sin(2 * math.pi * elapsed / 0.35 + 1.3)
+            return {"kind": "write", "phase": (elapsed % 1.7) / 1.7, "scale": base + flicker}
         if mode == "ERROR":
             return {"kind": "alert", "phase": 0.0, "scale": 1.0}
         if mode == "DONE":
@@ -339,7 +349,7 @@ class OverlayModel:
             if 0.0 <= age < interval:
                 p = age / interval
                 rings.append({
-                    "radius": 15.0 + (32.0 - 15.0) * p,
+                    "radius": 14.0 + (26.0 - 14.0) * p,
                     "color": lerp_hex(_ACCENTS["LISTENING"], PANEL, p),
                 })
         return rings
@@ -355,7 +365,9 @@ class OverlayModel:
 
     def _alpha(self, mode, elapsed):
         if mode == "SLEEPING" and elapsed > SLEEP_DIM_AFTER:
-            return 0.97 + (0.88 - 0.97) * _clamp((elapsed - SLEEP_DIM_AFTER) / 1.0)
+            # idle recedes a little further into the background than before —
+            # the HUD should visibly rest, not just sit at a flat 97%.
+            return 0.97 + (0.85 - 0.97) * _clamp((elapsed - SLEEP_DIM_AFTER) / 1.0)
         return 0.97
 
 
@@ -372,6 +384,8 @@ class Overlay:
     _FONT_TITLE = ("Segoe UI", 15, "bold")
     _FONT_LABEL = ("Segoe UI", 10, "bold")
     _FONT_TRANSCRIPT = ("Segoe UI", 13, "italic")
+    _FONT_GLYPH = ("Segoe UI", 14, "bold")  # bigger than the label font so the
+                                             # ERROR "!" actually reads at a glance
 
     def __init__(self, model=None):
         self.model = model or OverlayModel()
@@ -500,14 +514,22 @@ class Overlay:
         """Create every canvas item ONCE; per-frame we only itemconfigure/coords
         (no delete/recreate -> flicker-free)."""
         c = self._canvas
+        # crisp offset shadow first (bottom of the stack) so the pill reads as
+        # a lifted card rather than a flat sticker on arbitrary wallpaper.
+        self._items["shadow"] = c.create_polygon(
+            0, 0, 0, 0, 0, 0, 0, 0, fill=SHADOW, outline="", smooth=True,
+        )
         self._items["pill"] = c.create_polygon(
             0, 0, 0, 0, 0, 0, 0, 0, fill=PANEL, outline="", smooth=True,
         )
         self._items["chip"] = c.create_rectangle(
-            0, 0, 0, 0, fill=CHIP_BG, outline="", state="hidden",
+            0, 0, 0, 0, fill=PANEL, outline="", state="hidden",
         )
-        # orb layers: glow ring, body, arc (thinking), checkmark (done), glyph
-        self._items["glow"] = c.create_oval(0, 0, 0, 0, outline=PANEL, width=2)
+        # orb: three nested, ever-brighter discs faked-gradient the halo (no
+        # blur on Canvas), then the solid core — the one signature element.
+        self._items["halo3"] = c.create_oval(0, 0, 0, 0, fill=PANEL, outline="")
+        self._items["halo2"] = c.create_oval(0, 0, 0, 0, fill=PANEL, outline="")
+        self._items["glow"] = c.create_oval(0, 0, 0, 0, fill=PANEL, outline="")
         self._items["orb"] = c.create_oval(0, 0, 0, 0, fill=PANEL, outline="")
         self._items["arc"] = c.create_arc(
             0, 0, 0, 0, style="arc", width=3, outline=PANEL, state="hidden",
@@ -610,16 +632,30 @@ class Overlay:
         right = cx + w / 2
         bottom = cy + h / 2
 
-        c.coords(it["pill"], *self._rounded_points(left, top, right, bottom, 18))
-        c.itemconfigure(it["pill"], outline=accent if v["mode"] in ("DONE", "ERROR") else "")
+        # shadow sits 3px lower than the pill so a sliver peeks out at the
+        # bottom edge — a cheap but legible stand-in for a blurred drop shadow.
+        c.coords(it["shadow"], *self._rounded_points(left, top + 3, right, bottom + 3, CORNER_RADIUS))
+        c.coords(it["pill"], *self._rounded_points(left, top, right, bottom, CORNER_RADIUS))
+        if v["mode"] in ("DONE", "ERROR"):
+            outline_color, outline_w = accent, 2
+        else:
+            # quiet neutral hairline year-round so the card keeps a defined
+            # edge on both very light and very dark desktop wallpaper.
+            outline_color, outline_w = lerp_hex(TEXT_SECONDARY, PANEL, 0.55), 1
+        c.itemconfigure(it["pill"], outline=outline_color, width=outline_w)
 
-        # orb column
+        # orb column: layered halo (dim -> bright) faking a radial glow,
+        # topped with the solid core.
         orb = v["orb"]
         orad = 13.0 * orb["scale"]
         ocx = left + 34
         ocy = cy
+        c.coords(it["halo3"], ocx - orad - 12, ocy - orad - 12, ocx + orad + 12, ocy + orad + 12)
+        c.itemconfigure(it["halo3"], fill=lerp_hex(accent, PANEL, 0.82))
+        c.coords(it["halo2"], ocx - orad - 7, ocy - orad - 7, ocx + orad + 7, ocy + orad + 7)
+        c.itemconfigure(it["halo2"], fill=lerp_hex(accent, PANEL, 0.6))
         c.coords(it["glow"], ocx - orad - 3, ocy - orad - 3, ocx + orad + 3, ocy + orad + 3)
-        c.itemconfigure(it["glow"], outline=lerp_hex(accent, PANEL, 0.35))
+        c.itemconfigure(it["glow"], fill=lerp_hex(accent, PANEL, 0.3))
         c.coords(it["orb"], ocx - orad, ocy - orad, ocx + orad, ocy + orad)
         c.itemconfigure(it["orb"], fill=accent)
 
@@ -656,7 +692,9 @@ class Overlay:
         if style == "chip":
             c.itemconfigure(it["line2"], state="hidden")
             text = v["line2"]
-            c.itemconfigure(it["chip"], state="normal", fill=CHIP_BG)
+            # tint the chip from the state's own accent instead of a fixed
+            # colour, so it stays coherent whichever mode ever uses "chip".
+            c.itemconfigure(it["chip"], state="normal", fill=lerp_hex(v["accent"], PANEL, 0.72))
             # size the chip to the text
             tmp = c.create_text(tx + 8, ty, text=text, anchor="w",
                                 font=self._timer_font())
@@ -688,14 +726,17 @@ class Overlay:
             c.itemconfigure(it[key], state="hidden")
         kind = orb["kind"]
         if kind == "arc":
-            c.itemconfigure(it["glow"], outline=lerp_hex(accent, PANEL, 0.6))
+            c.itemconfigure(it["glow"], fill=lerp_hex(accent, PANEL, 0.5))
             c.coords(it["arc"], ocx - orad, ocy - orad, ocx + orad, ocy + orad)
-            c.itemconfigure(it["arc"], start=orb["phase"], extent=90,
+            c.itemconfigure(it["arc"], start=orb["phase"], extent=orb.get("extent", 90),
                             outline=accent, state="normal")
             c.itemconfigure(it["orb"], fill=PANEL)
         elif kind == "check":
             p = orb["phase"]
-            # two-segment tick drawn over 250ms
+            # two-segment tick drawn over 250ms; stroke derives from the
+            # accent (darkened) so it stays legible against the bright core
+            # regardless of which state's accent lands here.
+            dark_stroke = lerp_hex(accent, "#000000", 0.78)
             x0, y0 = ocx - 6, ocy
             x1, y1 = ocx - 1, ocy + 5
             x2, y2 = ocx + 7, ocy - 5
@@ -707,13 +748,16 @@ class Overlay:
                 c.coords(it["check"], x0, y0, bx, by, bx, by)
             else:
                 c.coords(it["check"], x0, y0, x1, y1, mx, my)
-            c.itemconfigure(it["check"], fill="#0B1F17", state="normal")
+            c.itemconfigure(it["check"], fill=dark_stroke, state="normal")
         elif kind == "alert":
+            # BUG FIX: this used to draw a near-black "!" on a near-black orb
+            # (both ~#0B0B0B) — effectively invisible. The mark now glows in
+            # the accent colour against the hollow dark core, like a hot coal.
             c.itemconfigure(it["glyph"], text="!", state="normal",
-                            fill="#1A0B0B")
+                            fill=accent, font=self._FONT_GLYPH)
             c.coords(it["glyph"], ocx, ocy)
             c.itemconfigure(it["orb"], fill=PANEL)
-            c.itemconfigure(it["glow"], outline=accent)
+            c.itemconfigure(it["glow"], fill=accent)
 
     def _paint_rings(self, rings, ocx, ocy):
         c = self._canvas
