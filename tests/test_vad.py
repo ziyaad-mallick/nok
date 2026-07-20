@@ -114,6 +114,34 @@ def test_energy_vad_warmup_ignores_a_loud_first_frame():
     assert vad.is_speech(_speech()) is True
 
 
+class _ScoredVad(_VadBase):
+    """Reports a numeric last_score each frame (like SileroVad's probability),
+    so we can assert endpoint() surfaces it in last_stats for the log trail."""
+
+    def __init__(self, scores, threshold=0.3):
+        self._scores = list(scores)
+        self._i = 0
+        self.threshold = threshold
+
+    def is_speech(self, frame):
+        self.last_score = self._scores[self._i] if self._i < len(self._scores) else 0.0
+        self._i += 1
+        return self.last_score >= self.threshold
+
+
+def test_endpoint_records_stats_on_no_command():
+    # All sub-threshold -> NO_COMMAND, but last_stats must still explain it:
+    # speech was "present-ish" (max_speech_score) yet never crossed threshold.
+    n = int(NO_SPEECH_TIMEOUT_MS / FRAME_MS) + 1
+    vad = _ScoredVad([0.12] * n)
+    assert vad.endpoint(_frames(n)) is NO_COMMAND
+    assert vad.last_stats["speech_started"] is False
+    assert vad.last_stats["n_frames"] == n
+    assert vad.last_stats["max_speech_score"] == 0.12
+    # _silence() frames -> peak_rms is ~0, i.e. the mic heard nothing loud.
+    assert vad.last_stats["peak_rms"] == 0.0
+
+
 def test_endpoint_silence_gap_shorter_than_800ms_does_not_end():
     short_gap = int(TRAILING_SILENCE_MS / FRAME_MS) - 2  # under threshold
     flags = [True] + [False] * short_gap + [True, True] + \

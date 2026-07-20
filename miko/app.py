@@ -156,7 +156,11 @@ class App:
 
         audio = self._listen()
         if audio is NO_COMMAND:
-            log_event("no_speech", stage="listen")
+            # Log WHY: peak_rms near 0 => mic captured silence (device/gain);
+            # peak_rms healthy but max_speech_score < threshold => speech was
+            # there but the VAD scored it too low (lower MIKO_VAD_THRESHOLD).
+            log_event("no_speech", stage="listen",
+                      **getattr(self.vad, "last_stats", {}))
             self._chime("back_to_sleep")
             return "went back to sleep"
 
@@ -349,22 +353,33 @@ def _make_speak():
 
 
 def _make_frame_source(ring_buffer, detector, stop_event):
-    """Yield 512-sample blocks from the ring buffer for vad.endpoint()."""
+    """Yield contiguous 512-sample blocks from the ring buffer for
+    vad.endpoint(). Sub-block remainders are carried across reads (not dropped)
+    so the stream stays gapless -- Silero's recurrent state depends on
+    contiguous frames, and dropped samples were degrading detection."""
+    import numpy as np
+
     from .ring_buffer import SAMPLE_RATE
 
     bs = 512
 
     def frames():
         consumed = ring_buffer.total_written
+        leftover = np.zeros(0, dtype=np.float32)
         while not stop_event.is_set():
             total = ring_buffer.total_written
-            if total - consumed >= bs:
-                chunk = ring_buffer.read_last((total - consumed) / SAMPLE_RATE)
-                for i in range(0, chunk.size - bs + 1, bs):
-                    yield chunk[i:i + bs]
-                consumed = total
-            else:
+            new = total - consumed
+            if new <= 0:
                 time.sleep(0.005)
+                continue
+            new = min(new, ring_buffer.capacity)  # never ask for more than retained
+            chunk = ring_buffer.read_last(new / SAMPLE_RATE)
+            consumed = total
+            buf = np.concatenate([leftover, chunk]) if leftover.size else chunk
+            n_full = (buf.size // bs) * bs
+            for i in range(0, n_full, bs):
+                yield buf[i:i + bs]
+            leftover = buf[n_full:].copy()
 
     return frames
 

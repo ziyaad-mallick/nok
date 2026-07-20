@@ -91,6 +91,22 @@ Miko is honest about what it is:
 - **With `--real`, audio transcription is local (Whisper on your machine)**, but the command text — and a screenshot if a command is screen-referential — is sent to the model provider as part of the Codex call. The default MockBrain sends nothing anywhere.
 - Every wake, transcript, decision, and dispatch is written to a local JSONL trail in `session-logs/` (gitignored) so you can see exactly what happened.
 
+## Troubleshooting: Miko wakes but never hears the command
+
+If a knock wakes Miko (chime plays) but it always goes back to sleep without
+acting, the voice detector never crossed its speech threshold. Every failed
+listen now logs *why* to `session-logs/*.jsonl`:
+
+```json
+{"kind": "no_speech", "stage": "listen", "peak_rms": 0.014, "max_speech_score": 0.22, ...}
+```
+
+- `peak_rms` near `0.0` — the mic captured silence. Check the input device
+  (`--device N`) and disable "audio enhancements"/noise-cancellation for it.
+- `peak_rms` healthy but `max_speech_score` below the threshold — speech was
+  there but scored too low (common on low-gain mics). Lower the Silero
+  threshold: `set MIKO_VAD_THRESHOLD=0.2` (default `0.3`) and rerun.
+
 ## Status
 
 Runs end-to-end on the offline MockBrain with zero spend. Test suite:

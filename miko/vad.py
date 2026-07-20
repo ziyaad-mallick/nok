@@ -22,6 +22,7 @@ The model doc: wake -> wait for speech; 5s of no speech = NO_COMMAND; after
 speech starts, 800ms trailing silence = utterance complete, return the numpy
 audio segment.
 """
+import os
 import urllib.request
 from pathlib import Path
 
@@ -67,6 +68,11 @@ class _VadBase:
     def is_speech(self, frame) -> bool:  # pragma: no cover - abstract
         raise NotImplementedError
 
+    # Diagnostics from the most recent endpoint() call. When a listen ends in
+    # NO_COMMAND, app.py logs this so a failed live wake tells us WHY (was the
+    # audio silent, or was speech present but scored under threshold?).
+    last_stats = {}
+
     def endpoint(self, frames):
         """Consume `frames` (iterable of float32 arrays) and return either the
         captured utterance (np.ndarray) or NO_COMMAND.
@@ -80,9 +86,21 @@ class _VadBase:
         speech_started = False
         waited_ms = 0.0
         silence_ms = 0.0
+        peak_rms = 0.0
+        max_score = 0.0
+        n_frames = 0
 
         for frame in frames:
+            n_frames += 1
+            arr = np.asarray(frame, dtype=np.float32)
+            if arr.size:
+                rms = float(np.sqrt(np.mean(arr * arr)))
+                if rms > peak_rms:
+                    peak_rms = rms
             speaking = self.is_speech(frame)
+            score = getattr(self, "last_score", None)
+            if score is not None and score > max_score:
+                max_score = score
             if not speech_started:
                 if speaking:
                     speech_started = True
@@ -91,7 +109,7 @@ class _VadBase:
                 else:
                     waited_ms += FRAME_MS
                     if waited_ms >= NO_SPEECH_TIMEOUT_MS:
-                        return NO_COMMAND
+                        break  # -> falls through to record stats + NO_COMMAND
             else:
                 collected.append(np.asarray(frame, dtype=np.float32))
                 if speaking:
@@ -105,6 +123,12 @@ class _VadBase:
                 if len(collected) * FRAME_MS >= MAX_UTTERANCE_MS:
                     break
 
+        self.last_stats = {
+            "peak_rms": round(peak_rms, 5),
+            "max_speech_score": round(max_score, 4),
+            "n_frames": n_frames,
+            "speech_started": speech_started,
+        }
         if not speech_started:
             return NO_COMMAND
         return np.concatenate(collected)
@@ -143,6 +167,7 @@ class EnergyVad(_VadBase):
     def is_speech(self, frame) -> bool:
         rms = self._rms(frame)
         if self._noise_floor is None:
+            self.last_score = 0.0
             # Seed the floor from the QUIETEST of the first few frames, not a
             # single frame: a user who starts talking the instant the chime ends
             # can't poison the floor to speech level (which would then read every
@@ -154,6 +179,7 @@ class EnergyVad(_VadBase):
             self._warmup = []
             return False
         threshold = max(self._noise_floor * self.threshold_factor, self.floor_min)
+        self.last_score = rms / threshold if threshold > 0 else 0.0
         speaking = rms > threshold
         if not speaking:
             self._noise_floor = (
@@ -166,9 +192,15 @@ class EnergyVad(_VadBase):
 class SileroVad(_VadBase):
     """silero-vad ONNX inference on onnxruntime (torch-free)."""
 
-    def __init__(self, model_path=DEFAULT_MODEL_PATH, threshold=0.5):
+    def __init__(self, model_path=DEFAULT_MODEL_PATH, threshold=None):
         import onnxruntime as ort
 
+        # Default lowered from 0.5 to 0.3: this machine's mic runs at low gain,
+        # so real speech scored under 0.5 and every listen timed out as
+        # "no_speech" (Whisper was never reached). Override with
+        # MIKO_VAD_THRESHOLD=0.x without touching code.
+        if threshold is None:
+            threshold = float(os.environ.get("MIKO_VAD_THRESHOLD", "0.3"))
         model_path = Path(model_path)
         if not model_path.exists():
             raise FileNotFoundError(
@@ -196,14 +228,16 @@ class SileroVad(_VadBase):
         out, self._state = self._session.run(
             None, {"input": inp, "state": self._state, "sr": self._sr}
         )
-        return float(out[0, 0]) >= self.threshold
+        self.last_score = float(out[0, 0])
+        return self.last_score >= self.threshold
 
 
 def get_vad(model_path=DEFAULT_MODEL_PATH):
     """Factory: silero if available, else energy. Logs the choice."""
     try:
         vad = SileroVad(model_path=model_path)
-        log_event("vad_selected", backend="silero", model_path=str(model_path))
+        log_event("vad_selected", backend="silero", model_path=str(model_path),
+                  threshold=vad.threshold)
         return vad
     except Exception as exc:
         log_event("vad_selected", backend="energy", reason=str(exc))
