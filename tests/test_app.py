@@ -162,6 +162,38 @@ def test_teach_exception_recovers():
 
 # -- triple-tap quick action ----------------------------------------------
 
+def test_write_wav_roundtrips_16bit_pcm(tmp_path):
+    import wave
+
+    import numpy as np
+
+    from miko.app import write_wav
+
+    sr = 16000
+    audio = np.array([0.0, 0.5, -0.5, 1.0, -1.0, 2.0], dtype=np.float32)  # 2.0 clips
+    path = tmp_path / "clip.wav"
+    write_wav(path, audio, sr)
+
+    with wave.open(str(path), "rb") as w:
+        assert w.getnchannels() == 1
+        assert w.getsampwidth() == 2
+        assert w.getframerate() == sr
+        frames = w.readframes(w.getnframes())
+    got = np.frombuffer(frames, dtype="<i2")
+    assert got.shape[0] == audio.shape[0]
+    assert got[0] == 0 and got[3] == 32767 and got[4] == -32767
+    assert got[5] == 32767  # 2.0 clipped to full-scale, not wrapped
+
+
+def test_tee_forwards_and_captures():
+    from miko.app import _tee
+
+    sink = []
+    out = list(_tee(iter([1, 2, 3]), sink))
+    assert out == [1, 2, 3]
+    assert sink == [1, 2, 3]
+
+
 def test_triple_tap_runs_quick_action_without_listening():
     disp = FakeDispatcher(result="Muted.")
     # FakeVad([]) would IndexError if endpoint() were called -> proves we skip it.

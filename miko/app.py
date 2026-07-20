@@ -276,7 +276,31 @@ class App:
     # -- I/O helpers (playback-gated) -------------------------------------
 
     def _listen(self):
+        # MIKO_DUMP_LISTEN: tee every frame the VAD sees into a buffer and write
+        # it to a WAV, so a failed listen can be played back -- did the mic pass
+        # clean speech (VAD's fault) or DSP-mangled mush (a Windows problem)?
+        if os.environ.get("MIKO_DUMP_LISTEN"):
+            sink = []
+            result = self.vad.endpoint(_tee(self._frames(), sink))
+            self._dump_listen(sink)
+            return result
         return self.vad.endpoint(self._frames())
+
+    def _dump_listen(self, frames):
+        if not frames:
+            return
+        import numpy as np
+        from .ring_buffer import SAMPLE_RATE
+        audio = np.concatenate(
+            [np.asarray(f, dtype=np.float32).reshape(-1) for f in frames]
+        )
+        path = _REPO_ROOT / "session-logs" / f"listen-{time.strftime('%Y%m%d-%H%M%S')}.wav"
+        try:
+            write_wav(path, audio, SAMPLE_RATE)
+            log_event("listen_dumped", path=str(path), samples=int(audio.size),
+                      peak=round(float(np.max(np.abs(audio))) if audio.size else 0.0, 4))
+        except Exception as exc:  # dumping is a debug aid, never break the cycle
+            log_event("listen_dump_error", error=str(exc))
 
     def _say(self, text):
         if not text:
@@ -351,6 +375,31 @@ def _make_speak():
         say(text)  # tts.say owns its own timeout/kill; gating is applied by App
 
     return speak
+
+
+def _tee(frames, sink):
+    """Yield each frame through while appending it to `sink` -- lets _listen
+    capture exactly what the VAD consumed for the MIKO_DUMP_LISTEN WAV."""
+    for f in frames:
+        sink.append(f)
+        yield f
+
+
+def write_wav(path, audio, sample_rate):
+    """Write float32 mono audio in [-1, 1] to a 16-bit PCM WAV (stdlib `wave`,
+    no PyAV -- which Smart App Control blocks). Pure + deterministic for tests."""
+    import wave
+
+    import numpy as np
+
+    a = np.asarray(audio, dtype=np.float32).reshape(-1)
+    pcm = (np.clip(a, -1.0, 1.0) * 32767.0).astype("<i2")
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(sample_rate))
+        w.writeframes(pcm.tobytes())
+    return path
 
 
 def _make_frame_source(ring_buffer, detector, stop_event):

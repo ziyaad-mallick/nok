@@ -129,6 +129,17 @@ class _ScoredVad(_VadBase):
         return self.last_score >= self.threshold
 
 
+def test_get_vad_energy_override(monkeypatch):
+    # MIKO_VAD=energy must force EnergyVad even when the silero model would load,
+    # and honor the factor override -- the robust path for a mic Silero can't read.
+    from miko.vad import EnergyVad, get_vad
+    monkeypatch.setenv("MIKO_VAD", "energy")
+    monkeypatch.setenv("MIKO_VAD_ENERGY_FACTOR", "2.5")
+    vad = get_vad()
+    assert isinstance(vad, EnergyVad)
+    assert vad.threshold_factor == 2.5
+
+
 def test_endpoint_records_stats_on_no_command():
     # All sub-threshold -> NO_COMMAND, but last_stats must still explain it:
     # speech was "present-ish" (max_speech_score) yet never crossed threshold.

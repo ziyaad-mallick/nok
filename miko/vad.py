@@ -233,7 +233,18 @@ class SileroVad(_VadBase):
 
 
 def get_vad(model_path=DEFAULT_MODEL_PATH):
-    """Factory: silero if available, else energy. Logs the choice."""
+    """Factory: silero if available, else energy. Logs the choice.
+
+    MIKO_VAD=energy forces EnergyVad: on some mics Silero scores real speech at
+    ~0 (hardware DSP defeats its speech model), so gating capture on RMS energy
+    (which is plainly present) and letting Whisper judge the words is far more
+    robust. MIKO_VAD_ENERGY_FACTOR tunes the RMS-over-noise-floor multiplier.
+    """
+    if os.environ.get("MIKO_VAD", "").strip().lower() == "energy":
+        factor = float(os.environ.get("MIKO_VAD_ENERGY_FACTOR", "3.0"))
+        log_event("vad_selected", backend="energy",
+                  reason="forced via MIKO_VAD", threshold_factor=factor)
+        return EnergyVad(threshold_factor=factor)
     try:
         vad = SileroVad(model_path=model_path)
         log_event("vad_selected", backend="silero", model_path=str(model_path),
