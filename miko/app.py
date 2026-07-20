@@ -430,6 +430,13 @@ def build_app(args):
     stop_event = threading.Event()
     frames = _make_frame_source(ring_buffer, detector, stop_event)
 
+    # Triple-tap instant-mute is OFF in production: on a hot/noisy mic the onset
+    # detector can form a spurious TRIPLE_TAP, and a quick action fires WITHOUT
+    # listening -- muting the system on a false knock (confusing + destructive).
+    # A triple-tap now just listens like a double-tap. Opt back in with
+    # MIKO_QUICK_MUTE=1 once the mic env is clean.
+    quick_action = DEFAULT_QUICK_ACTION if os.environ.get("MIKO_QUICK_MUTE") else None
+
     app = App(
         brain=brain,
         dispatcher=None,  # set below once run_skill is bound
@@ -442,6 +449,7 @@ def build_app(args):
         chime=_make_chime(),
         speak=_make_speak(),
         cooldown=COOLDOWN_S,
+        quick_action=quick_action,
     )
     app.dispatcher = Dispatcher(actions, skill_runner=app.run_skill)
 
