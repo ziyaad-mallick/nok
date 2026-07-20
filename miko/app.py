@@ -470,6 +470,10 @@ def build_app(args):
         det_cfg.simple_amplitude = float(
             os.environ.get("MIKO_THUMP_AMPLITUDE", det_cfg.simple_amplitude)
         )
+    # Missed knocks? Lower the loudness gate without recalibrating.
+    floor_override = os.environ.get("MIKO_KNOCK_FLOOR")
+    if floor_override:
+        det_cfg.amplitude_floor = float(floor_override)
     detector = KnockDetector(det_cfg)
 
     ring_buffer = RingBuffer(seconds=10.0)
@@ -541,7 +545,13 @@ def main(argv=None):
     app, detector, capture, ring_buffer, stop_event = build_app(args)
     from .ioi import IOIStateMachine
 
-    ioi = IOIStateMachine()
+    # Wider pairing window than the module default (0.45s): a natural
+    # "knock ... knock" is often slower than that and was being rejected as
+    # "too slow to be a pair", forcing users to repeat it. Env-tunable.
+    ioi = IOIStateMachine(
+        max_ioi=float(os.environ.get("MIKO_MAX_IOI", "0.6")),
+        close_out=float(os.environ.get("MIKO_CLOSE_OUT", "0.75")),
+    )
     capture.start()
     worker = threading.Thread(
         target=detector.run,

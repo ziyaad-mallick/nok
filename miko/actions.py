@@ -174,6 +174,7 @@ TOOLBOX_PROMPT = (
     '  open_app  {"name": "<app>"}      - launch a known app\n'
     '  type_text {"text": "<text>"}     - type text into the focused window\n'
     '  media     {"command": "mute|play|pause|next|prev"} - media/volume key\n'
+    '  none      {}                     - do nothing; put the reason in "say"\n'
     "Stretch actions (use only if clearly requested):\n"
     '  close_app {"name": "<app>"} | screenshot {} | '
     'macro {"name": "<macro>"} | skill {"name": "<skill>"}'

@@ -39,6 +39,15 @@ def test_open_app(disp, seams):
     assert "spotify" in result.lower()
 
 
+def test_none_action_does_nothing_and_types_nothing(disp, seams):
+    # Regression: the mock no-match default used to be type_text, which typed
+    # "sorry, I didn't catch that" into the focused window. `none` must touch
+    # no OS seam and return "" so the caller just speaks the 'say'.
+    result = disp.dispatch({"action": "none", "args": {}, "say": "Didn't catch that."})
+    assert result == ""
+    assert seams["type"] == [] and seams["start"] == [] and seams["vk"] == []
+
+
 def test_open_unknown_app_returns_error_no_launch(disp, seams):
     result = disp.dispatch({"action": "open_app", "args": {"name": "ghost"}})
     assert seams["start"] == []

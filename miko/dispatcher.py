@@ -71,6 +71,8 @@ class Dispatcher:
 
     def _route(self, name: str, args: dict) -> str:
         a = self._actions
+        if name == "none":
+            return ""  # nothing to do; the caller speaks the action's 'say'
         if name == "open_app":
             return a.open_app(args)
         if name == "close_app":

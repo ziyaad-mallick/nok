@@ -23,6 +23,8 @@ ACTION_WHITELIST = (
     "screenshot",
     "macro",
     "skill",
+    "none",  # explicit "do nothing" -- lets the brain decline instead of
+             # being forced into a wrong action (e.g. typing an error message)
 )
 
 

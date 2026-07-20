@@ -1,5 +1,5 @@
 {
-  "default": {"action": "type_text", "args": {"text": "sorry, I didn't catch that"}, "say": "I'm not sure what you meant."},
+  "default": {"action": "none", "args": {}, "say": "Sorry, I didn't catch that."},
   "rules": [
     {"contains": "spotify", "response": {"action": "open_app", "args": {"name": "spotify"}, "say": "Opening Spotify."}},
     {"contains": "notepad", "response": {"action": "open_app", "args": {"name": "notepad"}, "say": "Opening Notepad."}},

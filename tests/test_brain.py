@@ -24,7 +24,12 @@ def test_mock_normal_returns_validated_action():
 def test_mock_default_when_no_rule_matches():
     brain = MockBrain()
     action = brain.decide("blah blah nonsense")
-    assert action["action"] == "type_text"  # the fixture default
+    # No match must be a harmless "none" (do nothing + say so), NOT a real
+    # action -- the old default typed "sorry, I didn't catch that" into the
+    # focused window, a genuine bug.
+    assert action["action"] == "none"
+    assert action["args"] == {}
+    assert "catch" in action["say"].lower()
 
 
 def test_mock_prose_mode_is_extracted_and_validated():
