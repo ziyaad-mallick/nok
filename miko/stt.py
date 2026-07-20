@@ -8,6 +8,7 @@ text plus a small confidence-ish info dict.
 the size choice is measured on THIS machine (Amendment 9), not assumed.
 """
 import argparse
+import os
 import sys
 import time
 import types
@@ -16,6 +17,17 @@ import numpy as np
 
 from .logs import log_event
 from .ring_buffer import SAMPLE_RATE
+
+# Prime Whisper with the command vocabulary. Short commands like "open YouTube"
+# were being misheard ("open a new tab with you") because the word never came
+# up in the model's expected context. initial_prompt biases decoding toward
+# these words at zero cost. Override/extend via MIKO_STT_PROMPT.
+COMMAND_HINT = (
+    "Voice commands for a desktop assistant. Examples: open Spotify, open "
+    "YouTube, open Gmail, open email, open Google, open Maps, open Chrome, "
+    "open Notepad, open calculator, open settings, open file explorer, mute, "
+    "pause, play, next track, previous track, take a screenshot, close this."
+)
 
 
 def _stub_av_if_blocked():
@@ -37,11 +49,16 @@ def _stub_av_if_blocked():
 
 
 class Transcriber:
-    def __init__(self, model_size="small.en", compute_type="int8", device="cpu"):
+    def __init__(self, model_size="small.en", compute_type="int8", device="cpu",
+                 initial_prompt=None):
         _stub_av_if_blocked()
         from faster_whisper import WhisperModel
 
         self.model_size = model_size
+        self.initial_prompt = (
+            initial_prompt if initial_prompt is not None
+            else os.environ.get("MIKO_STT_PROMPT", COMMAND_HINT)
+        )
         self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
     def transcribe(self, np_audio_16k):
@@ -49,7 +66,9 @@ class Transcriber:
         estimate (exp of mean segment logprob), and no_speech_prob.
         """
         audio = np.asarray(np_audio_16k, dtype=np.float32).reshape(-1)
-        segments, _ = self._model.transcribe(audio, language="en")
+        segments, _ = self._model.transcribe(
+            audio, language="en", initial_prompt=self.initial_prompt,
+        )
         segs = list(segments)
         text = " ".join(s.text.strip() for s in segs).strip()
 
