@@ -28,6 +28,7 @@ from pathlib import Path
 
 from . import teach as teach_mod
 from .brain import BrainTimeout, QuotaExhausted
+from .ioi import TRIPLE_TAP
 from .jsonx import ContractError
 from .logs import log_event
 from .tts import COOLDOWN_S, playback_gate
@@ -43,6 +44,10 @@ ERROR = "ERROR"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SKILLS_DIR = _REPO_ROOT / "skills"
+
+# Triple-knock = instant quick action (no STT round-trip). Pass quick_action=None
+# to disable.
+DEFAULT_QUICK_ACTION = {"action": "media", "args": {"command": "mute"}, "say": "Muted."}
 
 
 class App:
@@ -64,9 +69,11 @@ class App:
         skills_dir=DEFAULT_SKILLS_DIR,
         min_confidence=0.4,
         cooldown=0.0,
+        quick_action=DEFAULT_QUICK_ACTION,
     ):
         self.brain = brain
         self.dispatcher = dispatcher
+        self.quick_action = quick_action
         self.matcher = matcher
         self.loader = loader
         self.vad = vad
@@ -136,6 +143,13 @@ class App:
     def _pipeline(self, pattern) -> str:
         self.set_state(LISTENING, detail=f"woke on {pattern}")
         self._chime("wake")
+
+        # Triple knock = instant quick action, no listen/transcribe round-trip.
+        if pattern == TRIPLE_TAP and self.quick_action is not None:
+            self.set_state(ACTING, detail=self.quick_action.get("action"))
+            result = self.dispatcher.dispatch(self.quick_action)
+            self._say(result or self.quick_action.get("say", ""))
+            return result
 
         # Hot-reload skills on every wake (design: loader scans on wake).
         self._refresh_skills()

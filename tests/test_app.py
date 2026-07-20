@@ -160,6 +160,20 @@ def test_teach_exception_recovers():
     assert ERROR in states
 
 
+# -- triple-tap quick action ----------------------------------------------
+
+def test_triple_tap_runs_quick_action_without_listening():
+    disp = FakeDispatcher(result="Muted.")
+    # FakeVad([]) would IndexError if endpoint() were called -> proves we skip it.
+    app, states, chimes, spoken, det = make_app(vad=FakeVad([]), dispatcher=disp)
+    result = app.handle_wake("TRIPLE_TAP")
+    assert result == "Muted."
+    assert disp.dispatched == [
+        {"action": "media", "args": {"command": "mute"}, "say": "Muted."}
+    ]
+    assert states == [LISTENING, ACTING, SLEEPING]
+
+
 # -- 5s no-speech ---------------------------------------------------------
 
 def test_no_speech_goes_back_to_sleep():
