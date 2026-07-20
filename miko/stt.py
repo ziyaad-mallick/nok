@@ -8,15 +8,37 @@ text plus a small confidence-ish info dict.
 the size choice is measured on THIS machine (Amendment 9), not assumed.
 """
 import argparse
+import sys
 import time
+import types
 
 import numpy as np
 
+from .logs import log_event
 from .ring_buffer import SAMPLE_RATE
+
+
+def _stub_av_if_blocked():
+    """faster-whisper force-imports PyAV (`av`) at package load, but only uses
+    it to decode audio *files* -- Miko always hands the model a numpy array, so
+    PyAV is never actually called. On this machine Windows Smart App Control
+    blocks PyAV's unsigned native DLL ("An Application Control policy has blocked
+    this file"), which would otherwise make Whisper unimportable and take the
+    whole app down. If the real `av` can't load, install a stub so the import
+    succeeds; decode_audio is never reached on our numpy path.
+    """
+    if "av" in sys.modules:
+        return
+    try:
+        import av  # noqa: F401
+    except Exception as exc:  # ImportError from the SAC DLL block, etc.
+        sys.modules["av"] = types.ModuleType("av")
+        log_event("av_stubbed", reason=str(exc))
 
 
 class Transcriber:
     def __init__(self, model_size="small.en", compute_type="int8", device="cpu"):
+        _stub_av_if_blocked()
         from faster_whisper import WhisperModel
 
         self.model_size = model_size
