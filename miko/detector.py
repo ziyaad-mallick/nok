@@ -77,9 +77,12 @@ class DetectorConfig:
     warmup_blocks: int = 3          # prime the EMA before emitting onsets
     refractory_s: float = 0.08      # min spacing between emitted onset candidates
     cooldown_s: float = 0.5         # gate cooldown after chime/TTS/BUSY (OV-4)
-    # SIMPLE thump mode (OV-1): any single loud spike wakes, classifier bypassed
+    # SIMPLE thump mode (OV-1): any single loud spike wakes, classifier bypassed.
+    # Must sit BELOW a typical calibrated amplitude_floor so --thump is a genuine
+    # last-resort fallback (looser), not stricter than normal mode. Override with
+    # MIKO_THUMP_AMPLITUDE when the mic runs quiet.
     simple_mode: bool = False
-    simple_amplitude: float = 0.20
+    simple_amplitude: float = 0.08
 
     @classmethod
     def from_calibration(cls, data: dict) -> "DetectorConfig":

@@ -21,6 +21,7 @@ whisper, onnxruntime, winsound) are imported lazily in build_app so importing
 this module — and unit-testing the state machine with fakes — stays cheap.
 """
 import argparse
+import os
 import sys
 import threading
 import time
@@ -417,6 +418,9 @@ def build_app(args):
         det_cfg = DetectorConfig()
     if args.thump:
         det_cfg.simple_mode = True
+        det_cfg.simple_amplitude = float(
+            os.environ.get("MIKO_THUMP_AMPLITUDE", det_cfg.simple_amplitude)
+        )
     detector = KnockDetector(det_cfg)
 
     ring_buffer = RingBuffer(seconds=10.0)
