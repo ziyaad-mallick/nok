@@ -282,13 +282,20 @@ def build(args):
     )
 
     def session_factory(on_state):
-        if args.local:
+        # Default: spoken commands, matched locally and executed. No key, no
+        # model server, no network -- and no LLM latency between saying a thing
+        # and it happening.
+        if args.realtime:
+            from .realtime import RealtimeSession
+            return RealtimeSession(device=device, on_state=on_state,
+                                   attach_screen=not args.no_screen)
+        if args.chat:
             from .local import LocalSession
             return LocalSession(device=device, on_state=on_state,
                                 attach_screen=not args.no_screen)
-        from .realtime import RealtimeSession
-        return RealtimeSession(device=device, on_state=on_state,
-                               attach_screen=not args.no_screen)
+        from .voice import VoiceCommandSession
+        return VoiceCommandSession(device=device, on_state=on_state,
+                                   speak=args.speak)
 
     miko = Miko(
         detector=detector,
@@ -324,8 +331,12 @@ def main(argv=None):
     p.add_argument("--device", type=int, default=None, help="input device index")
     p.add_argument("--no-sides", action="store_true", help="ignore side detection")
     p.add_argument("--no-screen", action="store_true", help="don't send screenshots")
-    p.add_argument("--local", action="store_true",
-                   help="run the agent fully locally via Ollama (no API key, no network)")
+    p.add_argument("--chat", action="store_true",
+                   help="conversational agent via Ollama instead of spoken commands")
+    p.add_argument("--realtime", action="store_true",
+                   help="OpenAI Realtime voice agent (needs OPENAI_API_KEY + quota)")
+    p.add_argument("--speak", action="store_true",
+                   help="speak a confirmation after each command")
     p.add_argument("--no-agent", action="store_true", help="instant actions only, no network")
     p.add_argument("--no-overlay", action="store_true", help="run without the overlay")
     args = p.parse_args(argv)
@@ -337,18 +348,15 @@ def main(argv=None):
         from . import calibrate_sides
         return calibrate_sides.main()
 
-    if not args.no_agent and not args.local and not os.environ.get("OPENAI_API_KEY"):
-        # No key: prefer a local model over silently disabling the agent.
+    if args.realtime and not os.environ.get("OPENAI_API_KEY"):
+        print("--realtime needs OPENAI_API_KEY. Falling back to spoken commands.\n")
+        args.realtime = False
+    if args.chat:
         from .local import pick_model
-        model, _vision = pick_model()
-        if model:
-            print(f"No OPENAI_API_KEY — using the local model '{model}' via Ollama.\n")
-            args.local = True
-        else:
-            print("No OPENAI_API_KEY and no local model, so the agent is off.")
-            print("  Either:  setx OPENAI_API_KEY \"sk-...\"")
-            print("  Or:      ollama pull moondream    (then run with --local)\n")
-            args.no_agent = True
+        if pick_model()[0] is None:
+            print("--chat needs Ollama running with a model. "
+                  "Falling back to spoken commands.\n")
+            args.chat = False
 
     miko, detector, capture, ring, side_cfg = build(args)
 
@@ -378,6 +386,11 @@ def main(argv=None):
 
     print("MIKO is listening.\n")
     print(bindings.describe(side_cfg.enabled, agent_enabled=not args.no_agent))
+    if not args.no_agent and not args.chat and not args.realtime:
+        print("\n  after a triple knock, say things like:")
+        print('    "open spotify"        "take a screenshot"')
+        print('    "pause"  "next track"  "volume up"  "mute"')
+        print('    "type hello world"')
     print("\nCtrl-C to quit.")
 
     loop_thread = threading.Thread(target=lambda: asyncio.run(miko.run()), daemon=True)

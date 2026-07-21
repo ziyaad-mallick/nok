@@ -83,7 +83,7 @@ def describe(sides_enabled: bool, agent_enabled: bool = True) -> str:
         lines.append("  knock knock                ->  screenshot")
 
     if agent_enabled:
-        lines.append("  knock knock knock          ->  wake the agent")
+        lines.append("  knock knock knock          ->  speak a command")
     else:
         lines.append("  knock knock knock          ->  (agent off)")
 

@@ -13,8 +13,12 @@ The `_tap_vk` seam stays module-level so tests can patch at the OS boundary
 without pressing real keys.
 """
 import ctypes
+import os
+import time
 
 VK_VOLUME_MUTE = 0xAD
+VK_VOLUME_DOWN = 0xAE
+VK_VOLUME_UP = 0xAF
 VK_MEDIA_NEXT_TRACK = 0xB0
 VK_MEDIA_PREV_TRACK = 0xB1
 VK_MEDIA_PLAY_PAUSE = 0xB3
@@ -26,7 +30,11 @@ _MEDIA_VK = {
     "next": VK_MEDIA_NEXT_TRACK,
     "prev": VK_MEDIA_PREV_TRACK,
     "previous": VK_MEDIA_PREV_TRACK,
+    "volume_up": VK_VOLUME_UP,
+    "volume_down": VK_VOLUME_DOWN,
 }
+
+TYPE_PRE_DELAY = 0.12  # let the target window settle before typing into it
 
 
 # INPUT structs for SendInput. Defined once at import; the user32 call happens
@@ -63,10 +71,49 @@ def _tap_vk(vk: int) -> None:
     ctypes.windll.user32.SendInput(ctypes.c_uint(2), arr, ctypes.sizeof(_INPUT))
 
 
-def media(command: str) -> str:
+def media(command: str, repeat: int = 1) -> str:
     """Tap the media key for `command`. Returns a user-visible result string."""
     vk = _MEDIA_VK.get((command or "").strip().lower())
     if vk is None:
         return f"I don't know the media command '{command}'."
-    _tap_vk(vk)
+    for _ in range(max(1, min(10, int(repeat)))):
+        _tap_vk(vk)
+        time.sleep(0.03)
     return f"Media: {command}."
+
+
+def _startfile(target: str) -> None:
+    os.startfile(target)  # noqa: S606 - target is a name the user spoke aloud
+
+
+def open_app(name: str) -> str:
+    """Launch by name through the Windows shell.
+
+    No whitelist. v1 shipped one with 11 entries, 8 of them bare URLs, and it
+    was the single loudest complaint about the product ("it can't do anything
+    except open Spotify"). The shell already resolves installed app names, URLs
+    and protocol handlers; a curated list only ever subtracts from that.
+    """
+    name = (name or "").strip()
+    if not name:
+        return "I didn't catch what to open."
+    for target in (name, f"{name}.exe", f"{name}:"):
+        try:
+            _startfile(target)
+            return f"Opening {name}."
+        except OSError:
+            continue
+    return f"I couldn't find {name}."
+
+
+def type_text(text: str) -> str:
+    """Type into whatever window currently has focus."""
+    text = text or ""
+    if not text.strip():
+        return "There was nothing to type."
+    from pynput.keyboard import Controller
+
+    time.sleep(TYPE_PRE_DELAY)
+    Controller().type(text)
+    preview = text if len(text) <= 40 else text[:37] + "..."
+    return f"Typed: {preview}"
