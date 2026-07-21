@@ -3,6 +3,8 @@
 Every case injects ``now`` explicitly (no wall clock, no window). tkinter is
 never imported here — importing ``OverlayModel`` must stay cheap and headless.
 """
+import pytest
+
 from miko.overlay import OverlayModel
 
 T0 = 100.0  # arbitrary monotonic origin
@@ -16,12 +18,20 @@ def _model_in(state, detail="", now=T0):
 
 # -- the seven modes: accent / title / expanded ----------------------------
 
-def test_sleeping_mode():
-    v = _model_in("SLEEPING", "ready — knock twice").view(T0)
+def test_sleeping_mode_is_invisible():
+    """At rest MIKO has no screen presence at all — no pill, no label.
+
+    v1 kept a persistent "MIKO / knock twice" pill on screen permanently. That
+    is the clutter that made the HUD read as a toy; the product should not be
+    visible until it is summoned.
+    """
+    m = _model_in("SLEEPING", "ready — knock twice")
+    v = m.view(T0)
     assert v["mode"] == "SLEEPING"
-    assert v["accent"] == "#726A5C"
-    assert v["title"] == "MIKO"
+    assert v["title"] == ""
     assert v["expanded"] is False
+    # fades out over ~300ms and stays gone
+    assert m.view(T0 + 0.5)["window_alpha"] == pytest.approx(0.0, abs=0.01)
 
 
 def test_listening_mode():
@@ -92,8 +102,8 @@ def test_thinking_elapsed_counter():
 def test_thinking_verb_rotation():
     m = _model_in("THINKING", "open spotify")
     assert m.view(T0 + 0.1)["title"] == "Thinking"
-    assert m.view(T0 + 4.1)["title"] == "Consulting codex"
-    assert m.view(T0 + 8.1)["title"] == "Planning the action"
+    assert m.view(T0 + 4.1)["title"] == "Reading the screen"
+    assert m.view(T0 + 8.1)["title"] == "Working it out"
     assert m.view(T0 + 12.1)["title"] == "Thinking"  # loops
 
 

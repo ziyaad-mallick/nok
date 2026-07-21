@@ -65,10 +65,11 @@ class Miko:
     """Owns the gesture queue, the local actions, and the agent session."""
 
     def __init__(self, *, detector=None, sides_enabled=False, on_state=None,
-                 session_factory=None, actions=None):
+                 on_level=None, session_factory=None, actions=None):
         self.detector = detector
         self.sides_enabled = sides_enabled
         self.on_state = on_state or (lambda s, d="": None)
+        self.on_level = on_level or (lambda source, rms: None)
         self.session_factory = session_factory
         self.actions = actions
 
@@ -189,7 +190,23 @@ class Miko:
         self._gate_detector(state == SPEAKING)
         self.set_state(state, detail)
 
+    async def _pump_levels(self):
+        """Feed live mic/output amplitude to the overlay at render cadence.
+
+        Polling the session is deliberate: the audio callbacks must never call
+        into the UI, and a missed frame costs nothing.
+        """
+        while self._session is not None:
+            try:
+                mic, out = self._session.levels()
+                self.on_level("mic", mic)
+                self.on_level("out", out)
+            except Exception:
+                pass
+            await asyncio.sleep(1 / 30)
+
     async def _drive_session(self):
+        levels = asyncio.create_task(self._pump_levels())
         try:
             stats = await asyncio.wait_for(
                 self._session.run(), timeout=SESSION_IDLE_TIMEOUT_S
@@ -206,6 +223,8 @@ class Miko:
             await asyncio.sleep(1.2)
         finally:
             self._session = None
+            levels.cancel()
+            await asyncio.gather(levels, return_exceptions=True)
             self._gate_detector(False)
             self.set_state(SLEEPING, "session closed")
 
@@ -321,11 +340,17 @@ def main(argv=None):
 
     miko, detector, capture, ring, side_cfg = build(args)
 
+    # Pay the screenshot stack's import + device-open cost now (~250ms) so the
+    # first knock is as fast as every later one.
+    from . import screen
+    screen.warmup()
+
     overlay = None
     if not args.no_overlay:
         from .overlay import Overlay
         overlay = Overlay()
         miko.on_state = overlay.set_state
+        miko.on_level = overlay.set_level
 
     stop_event = threading.Event()
     ioi = IOIStateMachine(

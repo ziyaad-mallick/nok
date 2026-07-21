@@ -39,17 +39,19 @@ KEY = "#010203"  # transparent-color key, never used in the palette
 
 # Per-state accent — one hue each, never reused.
 _ACCENTS = {
-    "SLEEPING": "#726A5C",   # cooling ash — idle
+    "SLEEPING": "#726A5C",   # cooling ash — never rendered (SLEEPING is invisible)
+    "WOKE": "#F4EEE4",       # near-white spark — deliberately not a hue: "heard you"
     "LISTENING": "#3FD1C0",  # bright teal — ears open
     "THINKING": "#9B80E8",   # amethyst — turning it over
+    "SPEAKING": "#E8A83D",   # warm gold — Miko has the floor
     "ACTING": "#5BC98A",     # jade — doing it
-    "TEACHING": "#E8A83D",   # warm gold — a spark of new skill
+    "TEACHING": "#E8A83D",   # retired with teach mode; kept so old events render
     "ERROR": "#E1604A",      # glowing coal-red — something's wrong
     "DONE": "#5BC98A",       # same hue as ACTING — landed cleanly
     "NEUTRAL": "#8C8175",
 }
 
-_THINK_VERBS = ["Thinking", "Consulting codex", "Planning the action"]
+_THINK_VERBS = ["Thinking", "Reading the screen", "Working it out"]
 
 # Two sizes.
 _COMPACT = (380, 64)
@@ -58,10 +60,25 @@ _EXPANDED_MODES = frozenset({"THINKING", "TEACHING", "ACTING", "ERROR", "DONE"})
 
 # Timing constants (seconds).
 SIZE_EASE = 0.18       # size change eases over ~180ms
+WOKE_HOLD = 0.22       # the "I heard you" spark before LISTENING takes over
 DONE_HOLD = 1.8        # DONE resolve holds before fading to SLEEPING
 ERROR_STICKY = 4.0     # hold the error visual this long since ERROR entered
 ERROR_MAX_LINK = 6.0   # only treat SLEEPING as an error-release if within this
 SLEEP_DIM_AFTER = 6.0  # SLEEPING dims alpha after this many idle seconds
+
+# -- audio-reactive level (see docs/design-review-v2.md §5) -----------------
+# Constants borrowed from clicky_windows' waveform driver, a sibling product
+# that solved the same problem against real mic input.
+NOISE_FLOOR = 0.008    # below this, treat as silence
+LEVEL_GAIN = 2.85      # raw RMS rarely exceeds ~0.35; this maps that to ~1.0
+LEVEL_CURVE = 0.76     # <1 compresses perceptually: quiet speech still moves
+TAU_ATTACK = 0.05      # ~50ms rise — reads as instant
+TAU_DECAY = 0.25       # ~250ms fall — no flicker between syllables
+
+RING_ONSET = 0.15      # level crossing that spawns a new sonar ring
+RING_MIN_GAP = 0.25    # never spawn rings faster than this
+RING_LIFE_IN = 0.40    # LISTENING rings collapse inward over this
+RING_LIFE_OUT = 0.55   # SPEAKING rings expand outward, slightly slower
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +133,33 @@ def lerp_hex(a, b, p):
 # ---------------------------------------------------------------------------
 # OverlayModel — pure headless logic
 # ---------------------------------------------------------------------------
+class LevelSmoother:
+    """Turns raw RMS into a stable 0..1 animation level.
+
+    Fast to rise and slow to fall, so the orb tracks speech onsets immediately
+    but does not strobe between syllables. Pure: `now` is injected, so it is
+    unit-testable without audio or a clock.
+    """
+
+    def __init__(self):
+        self.level = 0.0
+        self._last_t = None
+
+    def push(self, rms, now):
+        dt = 0.0 if self._last_t is None else max(0.0, now - self._last_t)
+        self._last_t = now
+        norm = max(float(rms) - NOISE_FLOOR, 0.0) * LEVEL_GAIN
+        norm = min(norm, 1.0) ** LEVEL_CURVE
+        if dt > 0.0:
+            tau = TAU_ATTACK if norm > self.level else TAU_DECAY
+            self.level += (norm - self.level) * (1.0 - math.exp(-dt / tau))
+        return self.level
+
+    def decay_to(self, now):
+        """Advance the fall without new audio (the stream went quiet)."""
+        return self.push(0.0, now)
+
+
 class OverlayModel:
     """Holds the current display mode and produces a full render description
     from a ``now`` reading. No tkinter; no wall-clock reads inside — the caller
@@ -139,6 +183,41 @@ class OverlayModel:
         # synthetic-transition bookkeeping
         self._error_release_at = None
         self._pending_sleep_detail = "cycle complete"
+
+        # audio-reactive state: one smoother per direction so LISTENING and
+        # SPEAKING never contaminate each other's decay.
+        self.mic = LevelSmoother()
+        self.out = LevelSmoother()
+        self._ring_spawns = []   # timestamps of live sonar rings
+        self._last_spawn = -1e9
+        self._prev_level = 0.0
+
+    # -- audio ------------------------------------------------------------
+
+    def push_level(self, source, rms, now):
+        """Feed one RMS reading. `source` is "mic" or "out"."""
+        smoother = self.mic if source == "mic" else self.out
+        level = smoother.push(rms, now)
+        if self._mode in ("LISTENING", "SPEAKING"):
+            self._maybe_spawn_ring(level, now)
+        self._prev_level = level
+        return level
+
+    def _maybe_spawn_ring(self, level, now):
+        """Rings mark speech onsets, not a metronome — that is the difference
+        between looking alive and looking like a loading spinner."""
+        crossed = self._prev_level < RING_ONSET <= level
+        if crossed and (now - self._last_spawn) >= RING_MIN_GAP:
+            self._ring_spawns.append(now)
+            self._last_spawn = now
+            del self._ring_spawns[:-4]  # never keep more than a few
+
+    def level_for(self, mode):
+        if mode == "SPEAKING":
+            return self.out.level
+        if mode == "LISTENING":
+            return self.mic.level
+        return 0.0
 
     # -- transitions -------------------------------------------------------
 
@@ -183,8 +262,14 @@ class OverlayModel:
             self._enter("SLEEPING", detail, now)
             return
 
+        if state == "WOKE":
+            self._enter("WOKE", detail, now)
+            return
         if state == "LISTENING":
             self._enter("LISTENING", detail, now)
+            return
+        if state == "SPEAKING":
+            self._enter("SPEAKING", detail, now)
             return
         if state == "THINKING":
             self.transcript = detail
@@ -215,6 +300,10 @@ class OverlayModel:
         further ``apply`` call."""
         m = self._mode
         e = self.state_entered_at
+        if m == "WOKE" and now >= e + WOKE_HOLD:
+            # The spark is a beat, not a state: it always resolves into
+            # LISTENING on its own so the caller never has to schedule it.
+            return ("LISTENING", e + WOKE_HOLD, False, False)
         if m == "DONE":
             if now < e + DONE_HOLD:
                 return ("DONE", e, self._prev_expanded, True)
@@ -254,9 +343,10 @@ class OverlayModel:
             "width": width,
             "height": height,
             "orb": self._orb(eff_mode, elapsed),
-            "rings": self._rings(eff_mode, elapsed),
+            "rings": self._rings(eff_mode, now),
             "shake_px": self._shake(eff_mode, elapsed),
             "window_alpha": self._alpha(eff_mode, elapsed),
+            "level": self.level_for(eff_mode),
             "detail": detail,
         }
 
@@ -268,15 +358,19 @@ class OverlayModel:
         line2 = ""
         style = "plain"
         if mode == "SLEEPING":
-            title = "MIKO"
-            if detail.startswith("ready") and elapsed < 5.0:
-                line2 = "ready — knock twice"
-            else:
-                line2 = "knock twice"
+            # Nothing. The HUD has no business sitting on screen 99.9% of the
+            # time telling the user how to use it.
+            title = ""
+        elif mode == "WOKE":
+            title = ""
         elif mode == "LISTENING":
             title = "Listening"
             dots = _dots(elapsed)
             line2 = _wake_line(detail)
+        elif mode == "SPEAKING":
+            title = "Miko"
+            line2 = self.transcript or detail
+            style = "transcript" if self.transcript else "plain"
         elif mode == "THINKING":
             title = _THINK_VERBS[int(elapsed // 4.0) % len(_THINK_VERBS)]
             dots = _dots(elapsed)
@@ -309,9 +403,24 @@ class OverlayModel:
         if mode == "SLEEPING":
             scale = 1.04 + 0.04 * math.sin(2 * math.pi * elapsed / 3.2)
             return {"kind": "breathe", "phase": (elapsed % 3.2) / 3.2, "scale": scale}
+        if mode == "WOKE":
+            # ease-out-back overshoot: 0.6 -> 1.15 -> 1.0. Reads as a spark
+            # snapping into existence rather than a panel fading in.
+            p = _clamp(elapsed / WOKE_HOLD)
+            scale = 0.6 + 0.55 * _ease_out_cubic(min(p * 2.0, 1.0))
+            if p > 0.5:
+                scale = 1.15 + (1.0 - 1.15) * _ease_out_cubic((p - 0.5) * 2.0)
+            return {"kind": "flash", "phase": p, "scale": scale}
         if mode == "LISTENING":
-            scale = 1.075 + 0.075 * math.sin(2 * math.pi * elapsed / 1.0)
-            return {"kind": "pulse", "phase": elapsed % 1.0, "scale": scale}
+            # Driven by the real microphone, not a sine wave. This is the
+            # single biggest "alive vs fake" difference from v1.
+            return {"kind": "pulse", "phase": elapsed % 1.0,
+                    "scale": 1.0 + self.mic.level * 0.35,
+                    "level": self.mic.level}
+        if mode == "SPEAKING":
+            return {"kind": "pulse", "phase": elapsed % 1.0,
+                    "scale": 1.0 + self.out.level * 0.35,
+                    "level": self.out.level}
         if mode == "THINKING":
             # a slower revolution with a breathing arc-length (material-style
             # spinner) reads as deliberate work, not a frantic spin — this can
@@ -336,22 +445,36 @@ class OverlayModel:
 
     # -- LISTENING sonar rings --------------------------------------------
 
-    def _rings(self, mode, elapsed):
-        if mode != "LISTENING":
+    def _rings(self, mode, now):
+        """Sonar rings, spawned on speech onsets and directional by mode.
+
+        LISTENING rings start wide and collapse toward the core (sound coming
+        IN); SPEAKING rings start at the core and expand outward (sound going
+        OUT). That direction flip is what makes the pill read as a
+        conversational partner rather than a level meter — and it costs one
+        inverted interpolation.
+        """
+        if mode not in ("LISTENING", "SPEAKING"):
             return []
-        interval = 0.9
+
+        inward = mode == "LISTENING"
+        life = RING_LIFE_IN if inward else RING_LIFE_OUT
+        accent = _ACCENTS[mode]
+
         rings = []
-        k = int(elapsed / interval)
-        for j in (k, k - 1):
-            if j < 0:
+        for spawned in self._ring_spawns:
+            age = now - spawned
+            if not (0.0 <= age < life):
                 continue
-            age = elapsed - j * interval
-            if 0.0 <= age < interval:
-                p = age / interval
-                rings.append({
-                    "radius": 14.0 + (26.0 - 14.0) * p,
-                    "color": lerp_hex(_ACCENTS["LISTENING"], PANEL, p),
-                })
+            p = age / life
+            eased = _ease_out_cubic(p)
+            radius = (26.0 + (14.0 - 26.0) * eased) if inward else \
+                     (14.0 + (30.0 - 14.0) * eased)
+            rings.append({
+                "radius": radius,
+                "color": lerp_hex(accent, PANEL, p),
+                "direction": "in" if inward else "out",
+            })
         return rings
 
     # -- ERROR shake -------------------------------------------------------
@@ -364,10 +487,12 @@ class OverlayModel:
     # -- window alpha ------------------------------------------------------
 
     def _alpha(self, mode, elapsed):
-        if mode == "SLEEPING" and elapsed > SLEEP_DIM_AFTER:
-            # idle recedes a little further into the background than before —
-            # the HUD should visibly rest, not just sit at a flat 97%.
-            return 0.97 + (0.85 - 0.97) * _clamp((elapsed - SLEEP_DIM_AFTER) / 1.0)
+        if mode == "SLEEPING":
+            # At rest MIKO is INVISIBLE, not dimmed. A persistent pill reading
+            # "knock twice" is the clutter that made v1 read as a HUD toy; the
+            # product should have no screen presence until it is summoned.
+            # A 300ms fade out keeps the exit from being a hard cut.
+            return 0.97 * (1.0 - _ease_out_cubic(elapsed / 0.30))
         return 0.97
 
 
@@ -395,6 +520,7 @@ class Overlay:
         self._items = {}
         self._closed = False
         self._last_topmost = 0.0
+        self._last_view = None
         # window geometry: fixed at the expanded size, pill drawn centered
         # within so size changes never thrash window geometry (only shake does).
         self._win_w = _EXPANDED[0] + 8
@@ -417,6 +543,18 @@ class Overlay:
             self._queue.put_nowait((state, str(detail or ""), time.monotonic()))
         except Exception as exc:  # a full/broken queue must not crash the cycle
             log_event("overlay_enqueue_failed", error=str(exc))
+
+    def set_level(self, source, rms):
+        """Feed live audio amplitude. `source` is "mic" or "out".
+
+        Same thread-safe queue as set_state: the audio threads must never touch
+        Tk. Dropped silently if the queue is saturated — a missed animation
+        frame is worth nothing, and blocking an audio callback is worth less.
+        """
+        try:
+            self._queue.put_nowait(("_level", source, float(rms), time.monotonic()))
+        except Exception:
+            pass
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -491,21 +629,30 @@ class Overlay:
         root.after(33, self._tick)
 
     def _make_click_through(self):
-        """Set WS_EX_LAYERED|TRANSPARENT|TOOLWINDOW so clicks pass through and
-        the window is hidden from alt-tab."""
+        """Clicks pass through, hidden from alt-tab, and can never take focus.
+
+        WS_EX_NOACTIVATE is the one that matters most and was missing in v1:
+        without it the window can still become foreground (a stray
+        SetForegroundWindow, or a click landing in a frame before TRANSPARENT
+        has applied), which steals the user's caret mid-typing. The overlay is
+        summoned while the user is working in another app — taking focus even
+        once is a broken product, not a cosmetic bug.
+        """
         try:
             import ctypes
             GWL_EXSTYLE = -20
             WS_EX_LAYERED = 0x00080000
             WS_EX_TRANSPARENT = 0x00000020
             WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_NOACTIVATE = 0x08000000
             hwnd = ctypes.windll.user32.GetParent(self._root.winfo_id())
             if not hwnd:
                 hwnd = self._root.winfo_id()
             get_long = ctypes.windll.user32.GetWindowLongPtrW
             set_long = ctypes.windll.user32.SetWindowLongPtrW
             style = get_long(hwnd, GWL_EXSTYLE)
-            style |= WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW
+            style |= (WS_EX_LAYERED | WS_EX_TRANSPARENT
+                      | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
             set_long(hwnd, GWL_EXSTYLE, style)
         except Exception as exc:
             log_event("overlay_exstyle_failed", error=str(exc))
@@ -569,27 +716,47 @@ class Overlay:
     # -- the single 30fps loop --------------------------------------------
 
     def _tick(self):
+        """One frame. Cheap at rest: MIKO idles ~99.9% of the time, so an
+        unconditional 30fps Canvas repaint would burn a timer and a redraw pass
+        forever for a window that is invisible. Repaint only when the view
+        actually changed or something is still animating, and back the poll off
+        to 5fps when fully at rest — the knock detector runs on its own thread,
+        so this costs no wake latency."""
         if self._closed or self._root is None:
             return
+        interval = 33
         try:
             self._drain()
             now = time.monotonic()
             v = self.model.view(now)
-            self._paint(v, now)
+
+            resting = v["mode"] == "SLEEPING" and v["window_alpha"] <= 0.001
+            if v != self._last_view or not resting:
+                self._paint(v, now)
+                self._last_view = v
+
+            if resting and self._queue.empty():
+                interval = 200
         except Exception as exc:
             log_event("overlay_tick_error", error=str(exc))
         try:
-            self._root.after(33, self._tick)
+            self._root.after(interval, self._tick)
         except Exception:
             pass
 
     def _drain(self):
         while True:
             try:
-                state, detail, ts = self._queue.get_nowait()
+                item = self._queue.get_nowait()
             except queue.Empty:
                 break
-            self.model.apply(state, detail, ts)
+            kind = item[0]
+            if kind == "_level":
+                _, source, rms, ts = item
+                self.model.push_level(source, rms, ts)
+            else:
+                state, detail, ts = item
+                self.model.apply(state, detail, ts)
 
     def _rounded_points(self, x0, y0, x1, y1, r):
         # eight corner anchors; smooth=True rounds them into a pill.
