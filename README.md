@@ -1,118 +1,238 @@
 # Miko
 
-**Knock twice on your laptop chassis to summon an agent that sees your screen, listens, and acts.**
+**Knock on your laptop. An agent wakes up, looks at your screen, and talks to you about it.**
 
-Miko turns the body of your laptop into a wake word. Two knuckle-knocks on the case are detected by the built-in microphone, Miko wakes, listens for a spoken command, asks a model what to do, and runs it — all through a whitelisted action layer so the model can never do anything you didn't allow. Built for OpenAI Build Week. Runs on Windows 11, Python 3.11+.
+No hotkey. No wake word. No window to find. You knock on the case with your knuckles — the same
+way you'd knock on a door — and the machine answers. The knock *is* the interface.
 
-There is no hotkey and no wake phrase. The knock *is* the interface.
+Built for OpenAI Build Week. Windows 11, Python 3.11+.
+
+```
+  knock knock  (right side)  →  screenshot            instant, local
+  knock knock  (left side)   →  play / pause          instant, local
+  knock knock knock          →  live voice agent      sees your screen
+```
+
+Knock again at any time to cut the agent off. Interrupting shouldn't require aiming.
 
 ---
 
-## How it works
+## Why a knock
+
+A hotkey can already open an assistant. So the honest test for any gesture is: **could a keyboard
+shortcut do this?** If yes, the gesture is decoration.
+
+A knock passes that test in exactly two places, and Miko is built on both:
+
+1. **Your hands are not on the keyboard.** You're holding a coffee, eating, on a call, across the
+   desk. `Alt+Space` requires you to already be in the position the gesture is meant to save you
+   from.
+2. **The gesture carries the whole command.** Double-knock takes a screenshot. That's it — no
+   speech, no round-trip, no waiting. The knock isn't a prelude to the real input; it *is* the
+   input.
+
+An earlier version of this project got that wrong: it made you knock *and then* speak a command,
+which is strictly worse than a hotkey. v2 deletes that idea. Two of the three gestures never open
+their mouth at all.
+
+---
+
+## Architecture
 
 ```
- ┌──────────┐   audio    ┌───────────────┐  onset   ┌──────────────┐
- │  mic (WASAPI) ────────▶│ knock detector│─────────▶│ IOI state    │
- │  ring buffer │  512-blk │ numpy, <32ms  │          │ machine      │
- └──────────┘            └───────────────┘          └──────┬───────┘
-                                                    double/triple tap
-                                                           │
-        ┌──────────────────────────────────────────────────▼─────────┐
-        │  wake cycle (one worker thread)                             │
-        │   chime → VAD endpoint → Whisper STT → brain.decide(JSON)   │
-        │        → whitelisted dispatcher → TTS                       │
-        └───────────────────────────┬───────────────────────────────┘
-                                     │ state, detail
-                              ┌──────▼───────┐
-                              │  overlay HUD │  (bottom-center, always-on-top)
-                              └──────────────┘
+ ┌──────────────────┐  512-sample blocks  ┌──────────────────┐
+ │ mic → RingBuffer │────────────────────▶│ knock classifier │  numpy only, <32ms
+ │      (WASAPI)    │                     │ peak · attack ·  │
+ │    → SideBuffer  │──── per-ch peaks ──▶│ spectral centroid│
+ └──────────────────┘                     └────────┬─────────┘
+                                                   │ onsets (+ side)
+                                          ┌────────▼──────────┐
+                                          │ IOI state machine │  double / triple
+                                          └────────┬──────────┘
+                                                   │ Gesture
+                                          ┌────────▼──────────┐
+                            ╔═════════════│   gesture queue   │═════════════╗
+                            ║             └───────────────────┘             ║
+                    thread boundary — the detector never blocks on anything
+                            ║             ┌───────────────────┐             ║
+                            ╚════════════▶│   asyncio loop    │◀════════════╝
+                                          └────────┬──────────┘
+                        ┌──────────────────────────┼──────────────────────────┐
+                        ▼                          ▼                          ▼
+                 local actions            GPT Realtime session          overlay HUD
+              screenshot · media       PCM16/24k · server VAD        audio-reactive
+                 (no network)          screen attached on wake       invisible at rest
 ```
 
-**Knock detection.** A `sounddevice` callback feeds a lock-free ring buffer. A consumer thread runs a numpy-only per-block classifier (peak amplitude + attack-ratio transient + spectral centroid) that stays under a hard 32ms/block budget, so nothing blocks the audio callback. Onsets feed an inter-onset-interval (IOI) state machine that recognizes double- and triple-tap patterns (120–450ms spacing) and rejects single taps, bounces, and storms. Thresholds are learned per-laptop by a calibration wizard that separates your knock from typing and room noise.
+**The detector never runs the work.** It classifies blocks and pushes a `Gesture` onto a queue —
+that's all. Everything else happens on an asyncio loop. This is the difference that makes
+knock-to-interrupt possible: previously the wake pipeline ran *inside* the detector's own loop, so
+while Miko was working it was deaf — knocks arriving mid-cycle were never classified at all.
 
-**The wake cycle** runs on one worker thread: a wake chime, then Silero VAD (ONNX, torch-free) endpoints your utterance, faster-whisper transcribes it, the brain returns a single JSON action, and a dispatcher validates it against a fixed action enum before executing. The overlay HUD subscribes to state transitions and renders them for the camera.
+**Knock detection.** A `sounddevice` callback feeds a lock-free ring buffer; a consumer thread runs
+a numpy-only per-block classifier (peak amplitude, attack ratio against a trailing EMA, spectral
+centroid) that stays under a hard 32ms/block budget so the audio callback is never blocked. Onsets
+feed an inter-onset-interval state machine that recognises double- and triple-taps (120–450ms
+spacing) and rejects single taps, mechanical bounces, and storms. Thresholds are learned per-laptop
+by a calibration wizard that separates your knock from typing and room noise.
 
-## The action contract
+**The agent** is one WebSocket to the OpenAI Realtime API — PCM16 at 24kHz both directions, server
+VAD for turn-taking so it stays a conversation rather than push-to-talk. A screenshot is captured
+*in parallel with connecting*, so by the time you've finished asking your question the image is
+already in context. Barge-in cancels the response, truncates conversation history to what you
+actually heard, and drops the local playback queue — all three, or the model believes it was heard
+in full.
 
-The model never gets free-form execution. It must return exactly:
+The previous pipeline measured **17–38 seconds** per turn through Silero VAD → faster-whisper → a
+`codex` subprocess, and regularly scored real speech as `no_speech`. That entire chain is deleted.
 
-```json
-{"action": "open_app", "args": {"name": "spotify"}, "say": "Opening Spotify."}
+---
+
+## Left and right
+
+Knocking on the left and right sides of the chassis triggers different actions — where the hardware
+allows it.
+
+Laptop microphone arrays run DSP beamforming before audio reaches Windows. On some machines that
+preserves enough inter-channel level difference to locate a knock; on others it flattens it
+completely. Miko does not assume. `--calibrate-sides` records labelled knocks from each side, fits
+a decision boundary, and computes **d′** (class separation over within-class spread). Side
+detection turns on only if d′ ≥ 2.0.
+
+If it doesn't clear that bar, the gesture map degrades honestly:
+
+```
+  knock knock         →  screenshot
+  knock knock knock   →  wake the agent
+  (media control is dropped, not reassigned)
 ```
 
-The dispatcher re-checks `action` against a fixed whitelist and runs only the matching hand-written function. Anything off the list is refused.
+Media control is *cut* rather than rebound to a four-knock chain. IOI reliability falls off past
+three onsets, and a gesture that misfires during a demo is worse than one that doesn't exist.
 
-| Action | Does |
-|---|---|
-| `open_app` / `close_app` | launch / kill a known app (`apps.json`) |
-| `type_text` | type into the focused window |
-| `media` | mute / play / pause / next / prev |
-| `screenshot` | capture the screen |
-| `macro` | run a saved sequence of the above (`macros.json`) |
-| `skill` | run a teach-mode skill (see below) |
-
-## Teach mode
-
-Knock, then say **"learn a new trick: …"**. Miko sends the request to Codex, which writes a new skill file into `skills/` by editing a constrained template. A static import check rejects any skill that reaches outside a curated helpers module before it is ever imported; the skill is then hot-loaded on your next knock. This is the one place Codex-the-coding-agent writes real code that runs.
-
-## Quickstart
-
-```powershell
-# from the repo root, in PowerShell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1              # activate the venv (prompt shows (.venv))
-pip install -r requirements.txt
-python scripts\download_silero.py         # one-time: fetch the VAD model
-python -m miko.calibrate                  # one-time: pin the mic + learn your knock
-python -m miko                            # start listening (MockBrain, zero spend)
-```
-
-Always run inside the activated venv (`python` must be the venv's). Then knock twice and say "open spotify".
-
-Flags:
-
-- default — offline **MockBrain**, no model spend (keyword-matches your speech).
-- `--real` — use the **Codex brain** (GPT-5); spends model quota.
-- `--thump` — SIMPLE mode: any single loud chassis thump wakes Miko (classifier off) — the fallback if calibration is off.
-- `--no-overlay` — run headless without the on-screen HUD.
-- `--device N` — override the input device index.
-- `--calibrate` — run the knock calibration wizard and exit.
+---
 
 ## The overlay
 
-A bottom-center, always-on-top, click-through HUD shows Miko's state so a demo reads clearly on camera: a breathing orb when asleep, a sonar pulse when listening, a rotating arc with a live `thinking · 0:07` counter while the model decides (which honestly absorbs the ~17–38s real-model latency), a green confirmation chip when acting, and a distinct treatment for teaching and errors. It runs on the main thread; state updates are marshaled to it through a queue, so the audio/wake threads never touch the UI. If no display is available it degrades to a no-op and Miko still runs.
+Invisible 99.9% of the time. It has no business sitting on your screen telling you how to use it.
 
-## Security & privacy
+When summoned it surfaces bottom-center — the one placement structurally unlikely to cover the
+content you're asking about. States are one continuous morph rather than four separate screens:
 
-Miko is honest about what it is:
+| State | Reads as |
+|---|---|
+| **WOKE** | a near-white spark, overshoot-and-settle — "I heard you" |
+| **LISTENING** | teal; rings collapse *inward*, driven by your live mic RMS |
+| **SPEAKING** | gold; rings expand *outward*, driven by the model's output audio |
+| **THINKING** | amethyst arc with an honest elapsed timer |
+| **ACTING** | jade flash and a chip naming the action |
+| **ERROR** | coal-red, damped shake, sticky for 4s so a screen recording catches it |
 
-- **The action whitelist is a footgun-guard, not a security sandbox.** It constrains what the model can trigger to a fixed set of hand-written functions; it does not sandbox arbitrary code. Teach-mode skills are checked for disallowed imports statically, which blocks the obvious escapes, not every conceivable one. Real subprocess isolation is deferred (see `TODOS.md`).
-- **`type_text` is a prompt-injection surface:** if a screen-referential command makes Miko read your screen, hostile on-screen text could influence what gets typed. Keep it to trusted contexts.
-- **With `--real`, audio transcription is local (Whisper on your machine)**, but the command text — and a screenshot if a command is screen-referential — is sent to the model provider as part of the Codex call. The default MockBrain sends nothing anywhere.
-- Every wake, transcript, decision, and dispatch is written to a local JSONL trail in `session-logs/` (gitignored) so you can see exactly what happened.
+The inward/outward ring flip is the whole signal for who currently holds the floor, and it costs
+one inverted interpolation.
 
-## Troubleshooting: Miko wakes but never hears the command
+Everything is driven by real amplitude — RMS, normalised against a noise floor, smoothed with a
+one-pole EMA that rises in ~50ms and falls in ~250ms so it tracks speech onsets without strobing
+between syllables. Rings spawn on onsets, not on a metronome.
 
-If a knock wakes Miko (chime plays) but it always goes back to sleep without
-acting, the voice detector never crossed its speech threshold. Every failed
-listen now logs *why* to `session-logs/*.jsonl`:
+The window is layered, click-through, hidden from alt-tab, and `WS_EX_NOACTIVATE` — it can never
+take focus. An overlay that steals your caret while you're typing in another app is a broken
+product, not a cosmetic bug.
 
-```json
-{"kind": "no_speech", "stage": "listen", "peak_rms": 0.014, "max_speech_score": 0.22, ...}
+---
+
+## Install
+
+```bash
+git clone <repo> && cd miko
+python -m venv .venv
+.venv/Scripts/pip install -r requirements.txt
 ```
 
-- `peak_rms` near `0.0` — the mic captured silence. Check the input device
-  (`--device N`) and disable "audio enhancements"/noise-cancellation for it.
-- `peak_rms` healthy but `max_speech_score` below the threshold — speech was
-  there but scored too low (common on low-gain mics). Lower the Silero
-  threshold: `set MIKO_VAD_THRESHOLD=0.2` (default `0.3`) and rerun.
+The agent needs an OpenAI **platform** API key with billing enabled (a ChatGPT subscription is a
+different credential and will not work):
 
-## Status
-
-Runs end-to-end on the offline MockBrain with zero spend. Test suite:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+```bash
+setx OPENAI_API_KEY "sk-..."
 ```
 
-The knock detector's kill criterion (≥18/20 double-taps detected, 0 false wakes across typing + desk noise) is validated with a replay harness against recorded fixtures. The codex bridge, VAD, and calibration math are unit-tested; the live wake loop is exception-armored so a single failed beat recovers instead of killing the listener.
+Roughly $0.06–0.11 per minute of conversation. Instant actions cost nothing — they never touch the
+network.
+
+## Run
+
+```bash
+.venv/Scripts/python -m miko --calibrate         # learn your knock (once)
+.venv/Scripts/python -m miko --calibrate-sides   # test left vs right (once)
+.venv/Scripts/python -m miko                     # go
+```
+
+| Flag | Effect |
+|---|---|
+| `--no-agent` | instant actions only, never connects |
+| `--no-screen` | agent runs blind, no screenshots sent |
+| `--no-sides` | ignore side detection |
+| `--thump` | any loud chassis thump wakes it (fallback for a quiet mic) |
+| `--no-overlay` | headless |
+
+Preview the interface with no key, no mic and no knocking:
+
+```bash
+.venv/Scripts/python scripts/overlay_preview.py
+```
+
+---
+
+## Safety
+
+The model cannot execute arbitrary code. It has exactly two tools — `take_screenshot` and
+`media_control`, the latter constrained to a five-value enum — and every tool result is a
+hand-written string. There is no shell, no filesystem write, no app launcher.
+
+Screenshots are sent to OpenAI when you triple-knock. Nothing is captured or transmitted at rest,
+and `--no-screen` disables it entirely.
+
+---
+
+## Troubleshooting
+
+Everything logs to `session-logs/*.jsonl`.
+
+| Symptom | Look for | Fix |
+|---|---|---|
+| Knocks never register | no `onset` events | `--thump`, or lower the gate: `set MIKO_KNOCK_FLOOR=0.03` |
+| Doubles read as two singles | `wake` with `NONE` | widen the window: `set MIKO_MAX_IOI=0.75` |
+| Agent won't connect | `realtime_session_error` | key is missing, unfunded, or a ChatGPT (not platform) credential |
+| Agent hears nothing | `mic_24k_open_failed` | the device refused 24kHz; it falls back and resamples — check `mic_fallback_rate` |
+| Sides always wrong | `d_prime` under 2.0 in `calibration.json` | this array beamforms; run `--no-sides` |
+
+---
+
+## Tests
+
+```bash
+.venv/Scripts/python -m pytest
+```
+
+211 tests, no hardware and no network required. The knock classifier runs against recorded
+fixtures; the Realtime layer is tested against a mock connection, because the bugs there live in
+event handling and the barge-in sequence rather than in the socket.
+
+---
+
+## What's deliberately not here
+
+- **Teach mode / learned skills.** An earlier version could generate new Python skills at runtime.
+  It never produced a single real one, and it was a genuine security surface. Deleted.
+- **An app launcher.** There used to be a whitelist of 11 apps, 8 of which were bare URLs. That's a
+  bookmarks file with extra steps.
+- **A four-knock gesture.** See above.
+- **Adaptive light/dark contrast.** tkinter gives one chroma-keyed transparent colour, not real
+  alpha. The card is opaque with a hairline edge and a shadow, which reads as a physical object on
+  any background instead of blending badly with all of them.
+
+---
+
+## License
+
+MIT.
