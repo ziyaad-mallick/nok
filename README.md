@@ -149,15 +149,40 @@ python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt
 ```
 
-The agent needs an OpenAI **platform** API key with billing enabled (a ChatGPT subscription is a
-different credential and will not work):
+Then pick a brain. **You do not need an API key.**
+
+### Local (free, offline, no account)
+
+Install [Ollama](https://ollama.com) and pull a model:
+
+```bash
+ollama pull qwen2.5vl          # can read your screen
+ollama pull granite3.2-vision  # smaller, document/UI focused
+```
+
+Run with `--local`. Everything stays on your machine — unplug the network and it still works.
+
+A warning worth heeding: **general image-captioning models cannot read a screen.** Reading a
+desktop is OCR plus layout understanding, and captioners fail it confidently rather than
+gracefully. Asked to describe a terminal full of code, `moondream` replied *"irtf.com profile page
+for Joshua Taylor Bennett"* — fast, fluent, entirely invented. Miko ranks document/UI models first
+and logs `vision_model_unreliable` when it has to fall back to a captioner. If you see that in the
+log, don't trust anything it says about your screen.
+
+Text-only models work too; Miko detects the lack of vision and skips the screenshot rather than
+pretending to look.
+
+### OpenAI Realtime (paid, much faster)
 
 ```bash
 setx OPENAI_API_KEY "sk-..."
 ```
 
-Roughly $0.06–0.11 per minute of conversation. Instant actions cost nothing — they never touch the
-network.
+Needs a **platform** key with billing enabled — a ChatGPT subscription is a different credential
+and will not work. Roughly $0.06–0.11 per minute. Sub-second responses and true speech-to-speech
+instead of the local path's staged pipeline.
+
+Instant actions cost nothing on either path. They never touch the network.
 
 ## Run
 
@@ -169,6 +194,7 @@ network.
 
 | Flag | Effect |
 |---|---|
+| `--local` | run the agent on your own machine via Ollama, no key |
 | `--no-agent` | instant actions only, never connects |
 | `--no-screen` | agent runs blind, no screenshots sent |
 | `--no-sides` | ignore side detection |
