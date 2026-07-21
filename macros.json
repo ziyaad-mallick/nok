@@ -1,6 +1,0 @@
-{
-  "focus": [
-    {"action": "media", "args": {"command": "mute"}},
-    {"action": "open_app", "args": {"name": "notepad"}}
-  ]
-}

@@ -214,7 +214,7 @@ Everything logs to `session-logs/*.jsonl`.
 .venv/Scripts/python -m pytest
 ```
 
-211 tests, no hardware and no network required. The knock classifier runs against recorded
+163 tests, no hardware and no network required. The knock classifier runs against recorded
 fixtures; the Realtime layer is tested against a mock connection, because the bugs there live in
 event handling and the barge-in sequence rather than in the socket.
 
