@@ -1,0 +1,30 @@
+[
+  {
+    "trial": "plain",
+    "sec": 17.7,
+    "status": 200,
+    "resp": "irtf.com profile page for Joshua Taylor Bennett",
+    "err": null
+  },
+  {
+    "trial": "with_system",
+    "sec": 2.5,
+    "status": 200,
+    "resp": "irtf.com profile page for Joshua Taylor Bennett",
+    "err": null
+  },
+  {
+    "trial": "with_think_false",
+    "sec": 2.5,
+    "status": 200,
+    "resp": "irtf.com profile page for Joshua Taylor Bennett",
+    "err": null
+  },
+  {
+    "trial": "with_numpredict",
+    "sec": 2.4,
+    "status": 200,
+    "resp": "irtv channel profile for Joshua Taylor basett",
+    "err": null
+  }
+]

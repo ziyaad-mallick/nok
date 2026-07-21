@@ -50,8 +50,31 @@ MAX_UTTERANCE_S = 15.0       # hard cap so a stuck mic cannot hang the turn
 START_TIMEOUT_S = 6.0        # give up if nobody speaks
 
 OLLAMA_URL = os.environ.get("MIKO_OLLAMA_URL", "http://localhost:11434")
-VISION_MODEL = os.environ.get("MIKO_VISION_MODEL", "moondream")
 TEXT_MODEL = os.environ.get("MIKO_TEXT_MODEL", "")
+
+# Vision models in preference order. Reading a SCREEN is not the same task as
+# describing a photo: it is OCR plus UI layout understanding, and general
+# image-captioning models fail it badly rather than gracefully.
+#
+# Measured on this repo (a terminal full of code, 2026-07-21):
+#   qwen2.5vl:3b  - built for document/UI understanding
+#   moondream     - 2.5s and confidently WRONG: answered "irtf.com profile page
+#                   for Joshua Taylor Bennett". A model that invents screen
+#                   content is worse than no vision at all, so it ranks last
+#                   and is only used if nothing else is installed.
+VISION_PREFERENCE = [
+    "qwen2.5vl",
+    "minicpm-v",
+    "llama3.2-vision",
+    "llava",
+    "bakllava",
+    "moondream",
+]
+VISION_MODEL = os.environ.get("MIKO_VISION_MODEL", "")
+
+# Captioning models that cannot reliably read UI text. Usable, but the user
+# should be told not to trust them about screen contents.
+UNRELIABLE_ON_SCREENS = {"moondream", "bakllava"}
 
 WHISPER_SIZE = os.environ.get("MIKO_WHISPER", "base.en")
 
@@ -187,13 +210,19 @@ def pick_model():
         got = match(TEXT_MODEL)
         if got:
             return got, False
-    got = match(VISION_MODEL)
-    if got:
-        return got, True
-    for known in ("llava", "llama3.2-vision", "qwen2.5vl", "bakllava", "minicpm-v"):
-        got = match(known)
+
+    if VISION_MODEL:                       # explicit override wins
+        got = match(VISION_MODEL)
         if got:
             return got, True
+
+    for known in VISION_PREFERENCE:        # best screen-reader available
+        got = match(known)
+        if got:
+            if known in UNRELIABLE_ON_SCREENS:
+                log_event("vision_model_unreliable", model=got)
+            return got, True
+
     return (names[0], False) if names else (None, False)
 
 

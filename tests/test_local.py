@@ -79,6 +79,35 @@ def test_falls_back_to_a_text_model_and_says_so(monkeypatch):
     assert vision is False
 
 
+def test_a_real_screen_reader_outranks_a_photo_captioner(monkeypatch):
+    """moondream answered a screenshot of code with "irtf.com profile page for
+    Joshua Taylor Bennett". Confident invention is worse than no vision, so a
+    document/UI model must win whenever one is installed."""
+    _fake_tags(monkeypatch, ["moondream:latest", "qwen2.5vl:3b"])
+    monkeypatch.setattr(local, "VISION_MODEL", "")
+    model, vision = pick_model()
+    assert model == "qwen2.5vl:3b" and vision is True
+
+
+def test_captioner_is_used_only_as_a_last_resort(monkeypatch):
+    _fake_tags(monkeypatch, ["moondream:latest"])
+    monkeypatch.setattr(local, "VISION_MODEL", "")
+    model, vision = pick_model()
+    assert model == "moondream:latest" and vision is True
+
+
+def test_unreliable_list_is_a_subset_of_the_preference_list():
+    assert local.UNRELIABLE_ON_SCREENS <= set(local.VISION_PREFERENCE)
+
+
+def test_unreliable_models_rank_below_reliable_ones():
+    ranks = {n: i for i, n in enumerate(local.VISION_PREFERENCE)}
+    worst_reliable = max(r for n, r in ranks.items()
+                         if n not in local.UNRELIABLE_ON_SCREENS)
+    best_unreliable = min(ranks[n] for n in local.UNRELIABLE_ON_SCREENS)
+    assert best_unreliable > worst_reliable
+
+
 def test_no_models_installed(monkeypatch):
     _fake_tags(monkeypatch, [])
     assert pick_model() == (None, False)
