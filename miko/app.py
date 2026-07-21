@@ -333,6 +333,9 @@ def main(argv=None):
     p.add_argument("--no-screen", action="store_true", help="don't send screenshots")
     p.add_argument("--chat", action="store_true",
                    help="conversational agent via Ollama instead of spoken commands")
+    # --local used to select the Ollama backend, before local spoken commands
+    # became the default. Accepted silently so an old command line still runs.
+    p.add_argument("--local", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--realtime", action="store_true",
                    help="OpenAI Realtime voice agent (needs OPENAI_API_KEY + quota)")
     p.add_argument("--speak", action="store_true",
