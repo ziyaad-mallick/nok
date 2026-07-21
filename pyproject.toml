@@ -4,3 +4,4 @@
 # clone that runs `pytest` hits ModuleNotFoundError: No module named 'miko'.
 pythonpath = ["."]
 testpaths = ["tests"]
+asyncio_mode = "auto"

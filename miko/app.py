@@ -1,574 +1,351 @@
-"""Miko application state machine — the wiring that ties every subsystem into
-one wake-to-act cycle.
+"""MIKO v2 — knock-summoned desktop agent.
 
-    SLEEPING --double/triple tap (detector -> IOI)--> LISTENING
-      LISTENING: wake chime (detector gated during playback + cooldown),
-                 vad.endpoint captures the utterance;
-                 5s no speech -> "back to sleep" chime -> SLEEPING
-      -> transcribe; empty/garbled -> say what was heard, re-listen ONCE
-      -> teach intent ("learn a new trick"/"teach you") -> TEACHING (teach.py)
-      -> THINKING: brain.decide (detector BUSY-gated; reentrant knocks dropped
-                   with one "still working"); QuotaExhausted -> notice once +
-                   matcher fallback for the rest of the session; BrainTimeout /
-                   ContractError -> error say -> SLEEPING
-      -> ACTING: dispatcher runs the whitelisted action
-      -> say the result (playback-gated) -> SLEEPING
+    knock knock  (right)  -> screenshot            local, instant
+    knock knock  (left)   -> media play/pause      local, instant
+    knock knock knock     -> live GPT voice agent  sees your screen
 
-Every transition is logged via log_event (the JSONL evidence trail) and pushed
-to an optional observer(state, detail) callback so the E1 overlay can subscribe
-later without touching this file. Heavy/hardware deps (sounddevice, faster-
-whisper, onnxruntime, winsound) are imported lazily in build_app so importing
-this module — and unit-testing the state machine with fakes — stays cheap.
+Architecture
+------------
+
+v1 ran the entire wake pipeline synchronously inside the detector's own run
+loop, which meant MIKO was deaf for the whole time it was working -- knocks
+arriving mid-cycle were not merely ignored, they were never classified. v2
+splits the two:
+
+    [audio callback]  -> RingBuffer (+ SideBuffer)      never blocks
+    [detector thread] -> classify -> Gesture -> Queue   never blocks
+    [asyncio loop]    -> drains the queue, owns actions and the agent session
+
+The detector's only output is now a queue push, so a knock during a live
+conversation is heard and acted on -- that is what makes knock-to-interrupt
+possible at all.
+
+Self-hearing is prevented the way v1 solved it: the detector's playback gate is
+held while the agent is speaking, so MIKO cannot wake itself on its own voice.
 """
 import argparse
+import asyncio
 import os
+import queue
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-from . import teach as teach_mod
-from .brain import BrainTimeout, QuotaExhausted
-from .ioi import TRIPLE_TAP
-from .jsonx import ContractError
+from . import bindings
+from .bindings import MEDIA_PLAY_PAUSE, SCREENSHOT, WAKE_AGENT
+from .ioi import IOIStateMachine
 from .logs import log_event
-from .tts import COOLDOWN_S, playback_gate
-from .vad import NO_COMMAND
-
-# States (plain strings so the overlay and the log read the same tokens).
-SLEEPING = "SLEEPING"
-LISTENING = "LISTENING"
-THINKING = "THINKING"
-ACTING = "ACTING"
-TEACHING = "TEACHING"
-ERROR = "ERROR"
+from .side import UNKNOWN
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SKILLS_DIR = _REPO_ROOT / "skills"
 
-# Triple-knock = instant quick action (no STT round-trip). Pass quick_action=None
-# to disable.
-DEFAULT_QUICK_ACTION = {"action": "media", "args": {"command": "mute"}, "say": "Muted."}
+# States shared with the overlay.
+SLEEPING = "SLEEPING"
+WOKE = "WOKE"
+LISTENING = "LISTENING"
+THINKING = "THINKING"
+SPEAKING = "SPEAKING"
+ACTING = "ACTING"
+ERROR = "ERROR"
+
+GESTURE_POLL_S = 0.02
+SESSION_IDLE_TIMEOUT_S = 120.0
 
 
-class App:
-    def __init__(
-        self,
-        *,
-        brain,
-        dispatcher,
-        matcher,
-        loader,
-        vad=None,
-        transcriber=None,
-        detector=None,
-        frames=None,
-        chime=None,
-        speak=None,
-        observer=None,
-        teach_fn=teach_mod.teach,
-        skills_dir=DEFAULT_SKILLS_DIR,
-        min_confidence=0.4,
-        cooldown=0.0,
-        quick_action=DEFAULT_QUICK_ACTION,
-    ):
-        self.brain = brain
-        self.dispatcher = dispatcher
-        self.quick_action = quick_action
-        self.matcher = matcher
-        self.loader = loader
-        self.vad = vad
-        self.transcriber = transcriber
+@dataclass(frozen=True)
+class Gesture:
+    pattern: str
+    side: str
+    t: float
+
+
+class Miko:
+    """Owns the gesture queue, the local actions, and the agent session."""
+
+    def __init__(self, *, detector=None, sides_enabled=False, on_state=None,
+                 session_factory=None, actions=None):
         self.detector = detector
-        self.teach_fn = teach_fn
-        self.skills_dir = Path(skills_dir)
-        self.min_confidence = min_confidence
-        self.cooldown = cooldown
+        self.sides_enabled = sides_enabled
+        self.on_state = on_state or (lambda s, d="": None)
+        self.session_factory = session_factory
+        self.actions = actions
 
-        self._frames = frames or (lambda: iter(()))
-        self.chime = chime or (lambda kind: None)
-        self.speak = speak or (lambda text: None)
-        self.observer = observer
-
+        self.gestures = queue.Queue()
         self.state = SLEEPING
-        self._current_transcript = ""
-        self._skill_manifest = self.loader.manifest_prompt()
-        self._last_result = ""
+        self._session = None
+        self._session_task = None
+        self._stop = asyncio.Event()
 
-        # session flags
-        self._quota_exhausted = False
-        self._quota_notified = False
+    # -- called from the detector thread ---------------------------------
 
-        # BUSY: one wake cycle at a time; reentrant knocks are dropped.
-        self._busy = False
-        self._busy_notified = False
+    def on_wake(self, pattern, t=None):
+        """Detector-thread callback. Must return immediately -- it runs inside
+        the detector's classification loop."""
+        self.gestures.put(Gesture(pattern, getattr(pattern, "side", UNKNOWN), t or 0.0))
 
-    # -- detector callback -------------------------------------------------
-
-    def on_wake(self, pattern, t=None) -> str:
-        """Called by the detector on a DOUBLE/TRIPLE tap. Drops the knock if a
-        cycle is already running (design "BUSY state")."""
-        if self._busy:
-            log_event("wake_busy_drop", pattern=pattern, t=t)
-            if not self._busy_notified:
-                self._busy_notified = True
-                self._say("Still working.")
-            return "Still working on the last thing."
-        return self.handle_wake(pattern)
-
-    # -- the cycle ---------------------------------------------------------
-
-    def handle_wake(self, pattern="DOUBLE_TAP") -> str:
-        self._busy = True
-        self._busy_notified = False
-        try:
-            return self._pipeline(pattern)
-        except Exception as exc:
-            # A crash in any subsystem (STT, teach codegen, dispatch) must not
-            # unwind into detector.run() and kill the daemon thread -- that
-            # leaves Miko silently deaf. Recover: one bad beat, then re-arm.
-            log_event("pipeline_error", error=str(exc))
-            self.set_state(ERROR, detail=f"pipeline error: {exc}")
-            try:
-                self._chime("error")
-                self._say("Something went wrong.")
-            except Exception:
-                pass
-            self._last_result = "pipeline error"
-            return "pipeline error"
-        finally:
-            self._busy = False
-            self._set_busy_gate(False)
-            self.set_state(SLEEPING, detail="cycle complete")
-
-    def _pipeline(self, pattern) -> str:
-        self.set_state(LISTENING, detail=f"woke on {pattern}")
-        self._chime("wake")
-
-        # Triple knock = instant quick action, no listen/transcribe round-trip.
-        if pattern == TRIPLE_TAP and self.quick_action is not None:
-            self.set_state(ACTING, detail=self.quick_action.get("action"))
-            result = self.dispatcher.dispatch(self.quick_action)
-            self._say(result or self.quick_action.get("say", ""))
-            return result
-
-        # Hot-reload skills on every wake (design: loader scans on wake).
-        self._refresh_skills()
-
-        audio = self._listen()
-        if audio is NO_COMMAND:
-            # Log WHY: peak_rms near 0 => mic captured silence (device/gain);
-            # peak_rms healthy but max_speech_score < threshold => speech was
-            # there but the VAD scored it too low (lower MIKO_VAD_THRESHOLD).
-            log_event("no_speech", stage="listen",
-                      **getattr(self.vad, "last_stats", {}))
-            self._chime("back_to_sleep")
-            return "went back to sleep"
-
-        text, info = self.transcriber.transcribe(audio)
-        log_event("transcript", text=text,
-                  confidence=round((info or {}).get("confidence", 0.0), 3))
-        text, ok = self._resolve_transcript(text, info)
-        if not ok:
-            return "didn't catch that"
-
-        self._current_transcript = text
-
-        if teach_mod.is_teach_intent(text):
-            self.set_state(TEACHING, detail=text)
-            result = self.teach_fn(text, self.brain, self.loader, self.skills_dir)
-            self._refresh_skills()  # make the new skill routable immediately
-            self._say(result)
-            return result
-
-        self.set_state(THINKING, detail=text)
-        action = self._decide(text)
-        if action is None:
-            return self._last_result  # error/fallback already spoke
-
-        self.set_state(ACTING, detail=action.get("action"))
-        result = self.dispatcher.dispatch(action)
-        self._say(result or action.get("say", ""))
-        return result
-
-    # -- transcript handling ----------------------------------------------
-
-    def _resolve_transcript(self, text, info):
-        """Return (text, ok). Garbled/empty -> say what was heard, re-listen
-        ONCE; still garbled -> (text, False)."""
-        if not self._is_garbled(text, info):
-            return text, True
-
-        self._say(f"I heard: {text}" if (text or "").strip()
-                  else "I didn't catch that.")
-        audio = self._listen()
-        if audio is NO_COMMAND:
-            self._chime("back_to_sleep")
-            return text, False
-
-        text2, info2 = self.transcriber.transcribe(audio)
-        if self._is_garbled(text2, info2):
-            self._say(f"Still couldn't catch that: {text2}" if (text2 or "").strip()
-                      else "Still didn't catch that.")
-            return text2, False
-        return text2, True
-
-    def _is_garbled(self, text, info) -> bool:
-        if not (text or "").strip():
-            return True
-        return (info or {}).get("confidence", 1.0) < self.min_confidence
-
-    # -- decision ----------------------------------------------------------
-
-    def _decide(self, text):
-        """Return an action dict, or None (an error/fallback path already
-        spoke and set self._last_result)."""
-        self._set_busy_gate(True)
-        try:
-            if self._quota_exhausted:
-                return self._fallback_action(text)
-
-            context = {"skill_manifest": self._skill_manifest}
-            try:
-                return self.brain.decide(text, context)
-            except QuotaExhausted:
-                if not self._quota_notified:
-                    self._quota_notified = True
-                    self._say("I'm out of model quota, using offline commands.")
-                self._quota_exhausted = True
-                return self._fallback_action(text)
-            except BrainTimeout:
-                self.set_state(ERROR, detail="brain timed out")
-                self._say("The brain timed out.")
-                self._last_result = "brain timed out"
-                return None
-            except ContractError as exc:
-                self.set_state(ERROR, detail=f"bad response: {exc}")
-                self._say("I got a bad response from the brain.")
-                self._last_result = "contract error"
-                return None
-        finally:
-            self._set_busy_gate(False)
-
-    def _fallback_action(self, text):
-        action = self.matcher.match(text)
-        if action is None:
-            self._say("I couldn't match that to an offline command.")
-            self._last_result = "no offline match"
-            return None
-        return action
-
-    # -- skills ------------------------------------------------------------
-
-    def _refresh_skills(self):
-        try:
-            self.loader.scan()
-        except Exception as exc:  # a bad skill must never crash the cycle
-            log_event("skill_scan_error", error=str(exc))
-        self.loader.register_into(self.matcher)
-        self._skill_manifest = self.loader.manifest_prompt()
-
-    def run_skill(self, name) -> str:
-        """Dispatcher skill hook: bridges the (name)->str signature to the
-        loader, supplying the current transcript as ctx."""
-        return self.loader.run_skill(name, self._current_transcript)
-
-    # -- I/O helpers (playback-gated) -------------------------------------
-
-    def _listen(self):
-        # MIKO_DUMP_LISTEN: tee every frame the VAD sees into a buffer and write
-        # it to a WAV, so a failed listen can be played back -- did the mic pass
-        # clean speech (VAD's fault) or DSP-mangled mush (a Windows problem)?
-        if os.environ.get("MIKO_DUMP_LISTEN"):
-            sink = []
-            result = self.vad.endpoint(_tee(self._frames(), sink))
-            self._dump_listen(sink)
-            return result
-        return self.vad.endpoint(self._frames())
-
-    def _dump_listen(self, frames):
-        if not frames:
-            return
-        import numpy as np
-        from .ring_buffer import SAMPLE_RATE
-        audio = np.concatenate(
-            [np.asarray(f, dtype=np.float32).reshape(-1) for f in frames]
-        )
-        path = _REPO_ROOT / "session-logs" / f"listen-{time.strftime('%Y%m%d-%H%M%S')}.wav"
-        try:
-            write_wav(path, audio, SAMPLE_RATE)
-            log_event("listen_dumped", path=str(path), samples=int(audio.size),
-                      peak=round(float(np.max(np.abs(audio))) if audio.size else 0.0, 4))
-        except Exception as exc:  # dumping is a debug aid, never break the cycle
-            log_event("listen_dump_error", error=str(exc))
-
-    def _say(self, text):
-        if not text:
-            return
-        with playback_gate(on_start=lambda: self._set_playback(True),
-                           on_end=lambda: self._set_playback(False),
-                           cooldown=self.cooldown):
-            self.speak(text)
-
-    def _chime(self, kind):
-        with playback_gate(on_start=lambda: self._set_playback(True),
-                           on_end=lambda: self._set_playback(False),
-                           cooldown=self.cooldown):
-            self.chime(kind)
-
-    def _set_playback(self, on):
-        if self.detector is None:
-            return
-        try:
-            self.detector.set_playback_gate(on)
-        except AttributeError:
-            self.detector.playback_gate = on
-
-    def _set_busy_gate(self, on):
-        if self.detector is None:
-            return
-        try:
-            self.detector.set_busy_gate(on)
-        except AttributeError:
-            self.detector.busy_gate = on
-
-    # -- observer ----------------------------------------------------------
+    # -- state -----------------------------------------------------------
 
     def set_state(self, state, detail=""):
         self.state = state
         log_event("state", state=state, detail=detail)
-        if self.observer is not None:
-            try:
-                self.observer(state, detail)
-            except Exception as exc:  # an overlay bug must not break the cycle
-                log_event("observer_error", error=str(exc))
-
-
-# ==========================================================================
-# Production wiring (not exercised by unit tests — touches real hardware).
-# ==========================================================================
-
-def _make_chime():
-    """winsound-based chimes; a distinct arpeggio per state cue."""
-    import winsound
-
-    tunes = {
-        "wake": [(660, 90), (990, 120)],
-        "back_to_sleep": [(660, 90), (440, 120)],
-        "error": [(330, 200)],
-    }
-
-    def chime(kind):
         try:
-            for freq, dur in tunes.get(kind, [(660, 100)]):
-                winsound.Beep(freq, dur)
-        except Exception as exc:
-            log_event("chime_error", kind=kind, error=str(exc))
+            self.on_state(state, detail)
+        except Exception as exc:  # an overlay bug must never break the loop
+            log_event("observer_error", error=str(exc))
 
-    return chime
+    def _gate_detector(self, on):
+        if self.detector is None:
+            return
+        try:
+            self.detector.set_playback_gate(bool(on))
+        except AttributeError:
+            self.detector.playback_gate = bool(on)
 
+    # -- the loop --------------------------------------------------------
 
-def _make_speak():
-    from .tts import say
-
-    def speak(text):
-        say(text)  # tts.say owns its own timeout/kill; gating is applied by App
-
-    return speak
-
-
-def _tee(frames, sink):
-    """Yield each frame through while appending it to `sink` -- lets _listen
-    capture exactly what the VAD consumed for the MIKO_DUMP_LISTEN WAV."""
-    for f in frames:
-        sink.append(f)
-        yield f
-
-
-def write_wav(path, audio, sample_rate):
-    """Write float32 mono audio in [-1, 1] to a 16-bit PCM WAV (stdlib `wave`,
-    no PyAV -- which Smart App Control blocks). Pure + deterministic for tests."""
-    import wave
-
-    import numpy as np
-
-    a = np.asarray(audio, dtype=np.float32).reshape(-1)
-    pcm = (np.clip(a, -1.0, 1.0) * 32767.0).astype("<i2")
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(int(sample_rate))
-        w.writeframes(pcm.tobytes())
-    return path
-
-
-def _make_frame_source(ring_buffer, detector, stop_event):
-    """Yield contiguous 512-sample blocks from the ring buffer for
-    vad.endpoint(). Sub-block remainders are carried across reads (not dropped)
-    so the stream stays gapless -- Silero's recurrent state depends on
-    contiguous frames, and dropped samples were degrading detection."""
-    import numpy as np
-
-    from .ring_buffer import SAMPLE_RATE
-
-    bs = 512
-
-    def frames():
-        consumed = ring_buffer.total_written
-        leftover = np.zeros(0, dtype=np.float32)
-        while not stop_event.is_set():
-            total = ring_buffer.total_written
-            new = total - consumed
-            if new <= 0:
-                time.sleep(0.005)
+    async def run(self):
+        self.set_state(SLEEPING, "ready")
+        while not self._stop.is_set():
+            try:
+                gesture = self.gestures.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(GESTURE_POLL_S)
                 continue
-            new = min(new, ring_buffer.capacity)  # never ask for more than retained
-            chunk = ring_buffer.read_last(new / SAMPLE_RATE)
-            consumed = total
-            buf = np.concatenate([leftover, chunk]) if leftover.size else chunk
-            n_full = (buf.size // bs) * bs
-            for i in range(0, n_full, bs):
-                yield buf[i:i + bs]
-            leftover = buf[n_full:].copy()
+            try:
+                await self._handle(gesture)
+            except Exception as exc:
+                log_event("gesture_error", error=repr(exc))
+                self.set_state(ERROR, str(exc))
+                await asyncio.sleep(0.8)
+                self.set_state(SLEEPING, "recovered")
 
-    return frames
+    def stop(self):
+        self._stop.set()
+
+    async def _handle(self, g: Gesture):
+        # A knock while the agent is live always means "stop", whatever the
+        # pattern was. Interrupting must never require aiming.
+        if self._session is not None:
+            log_event("gesture_during_session", pattern=str(g.pattern))
+            await self._close_session()
+            return
+
+        binding = bindings.resolve(g.pattern, g.side, sides_enabled=self.sides_enabled)
+        log_event("gesture", pattern=str(g.pattern), side=g.side, intent=binding.intent)
+
+        if binding.intent == SCREENSHOT:
+            await self._instant(binding, self._screenshot)
+        elif binding.intent == MEDIA_PLAY_PAUSE:
+            await self._instant(binding, self._play_pause)
+        elif binding.intent == WAKE_AGENT:
+            await self._open_session()
+
+    # -- instant, local, no network --------------------------------------
+
+    async def _instant(self, binding, fn):
+        self.set_state(ACTING, binding.label)
+        t0 = time.perf_counter()
+        try:
+            result = await asyncio.to_thread(fn)
+        except Exception as exc:
+            log_event("instant_action_failed", intent=binding.intent, error=str(exc))
+            self.set_state(ERROR, str(exc))
+            await asyncio.sleep(0.8)
+            self.set_state(SLEEPING)
+            return
+        dt = time.perf_counter() - t0
+        log_event("instant_action", intent=binding.intent, seconds=round(dt, 4),
+                  result=result)
+        await asyncio.sleep(0.35)  # let the confirmation flourish be seen
+        self.set_state(SLEEPING)
+
+    def _screenshot(self):
+        from . import screen
+        return str(screen.save_png())
+
+    def _play_pause(self):
+        from .actions import VK_MEDIA_PLAY_PAUSE, _tap_vk
+        _tap_vk(VK_MEDIA_PLAY_PAUSE)
+        return "play/pause"
+
+    # -- the agent -------------------------------------------------------
+
+    async def _open_session(self):
+        if self.session_factory is None:
+            self.set_state(ERROR, "no agent configured")
+            await asyncio.sleep(1.0)
+            self.set_state(SLEEPING)
+            return
+
+        self.set_state(WOKE, "summoned")
+        self._session = self.session_factory(on_state=self._session_state)
+        self._session_task = asyncio.create_task(self._drive_session())
+
+    def _session_state(self, state, detail=""):
+        # Hold the detector's gate while the agent talks so its own voice
+        # cannot be classified as a knock (v1's fix, carried forward).
+        self._gate_detector(state == SPEAKING)
+        self.set_state(state, detail)
+
+    async def _drive_session(self):
+        try:
+            stats = await asyncio.wait_for(
+                self._session.run(), timeout=SESSION_IDLE_TIMEOUT_S
+            )
+            log_event("session_complete", turns=stats.turns,
+                      first_audio=round(stats.first_audio_latency, 3))
+        except asyncio.TimeoutError:
+            log_event("session_timeout")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_event("session_failed", error=repr(exc))
+            self.set_state(ERROR, str(exc))
+            await asyncio.sleep(1.2)
+        finally:
+            self._session = None
+            self._gate_detector(False)
+            self.set_state(SLEEPING, "session closed")
+
+    async def _close_session(self):
+        session, task = self._session, self._session_task
+        self._session = None
+        self._session_task = None
+        if session is not None:
+            session.request_stop()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._gate_detector(False)
+        self.set_state(SLEEPING, "closed by knock")
 
 
-def build_app(args):
-    """Wire the real subsystems for `python -m miko`."""
-    from .actions import Actions
+# ==========================================================================
+# Production wiring
+# ==========================================================================
+
+def build(args):
+    """Wire real hardware. Returns (miko, detector, capture, stop_event)."""
     from .audio import CaptureLoop
-    from .config import load_config
     from .detector import DetectorConfig, KnockDetector
-    from .dispatcher import Dispatcher
-    from .matcher import build_default_matcher
     from .ring_buffer import RingBuffer
-    from .skills_loader import SkillsLoader
-    from .stt import Transcriber
-    from .vad import get_vad
-    from . import helpers as helpers_module
-    from .brain import CodexBrain, MockBrain
+    from .side import SideBuffer, SideClassifier, SideConfig
 
-    apps, macros = load_config()
-    actions = Actions(apps, macros)
-    helpers_module.bind(actions)  # skills reach the whitelist through helpers
+    cal_path = _REPO_ROOT / "calibration.json"
+    cal = _load_calibration(cal_path)
 
-    brain = CodexBrain() if args.real else MockBrain()
-    matcher = build_default_matcher(apps)
-    loader = SkillsLoader(skills_dir=DEFAULT_SKILLS_DIR, brain=brain)
-    loader.scan()
-    loader.register_into(matcher)
-
-    # detector config: calibration file if present, --thump forces SIMPLE mode
-    cal = _REPO_ROOT / "calibration.json"
-    if cal.exists():
-        det_cfg = DetectorConfig.from_calibration_file(str(cal))
-    else:
-        det_cfg = DetectorConfig()
+    det_cfg = (DetectorConfig.from_calibration(cal) if cal else DetectorConfig())
     if args.thump:
         det_cfg.simple_mode = True
         det_cfg.simple_amplitude = float(
             os.environ.get("MIKO_THUMP_AMPLITUDE", det_cfg.simple_amplitude)
         )
-    # Missed knocks? Lower the loudness gate without recalibrating.
-    floor_override = os.environ.get("MIKO_KNOCK_FLOOR")
-    if floor_override:
-        det_cfg.amplitude_floor = float(floor_override)
-    detector = KnockDetector(det_cfg)
+    floor = os.environ.get("MIKO_KNOCK_FLOOR")
+    if floor:
+        det_cfg.amplitude_floor = float(floor)
 
-    ring_buffer = RingBuffer(seconds=10.0)
-    vad = get_vad()
-    transcriber = Transcriber()
+    side_cfg = SideConfig.from_dict(cal.get("sides", {}) if cal else {})
+    if args.no_sides:
+        side_cfg.enabled = False
 
-    stop_event = threading.Event()
-    frames = _make_frame_source(ring_buffer, detector, stop_event)
+    side_buffer = SideBuffer() if side_cfg.enabled else None
+    side_clf = SideClassifier(side_buffer, side_cfg) if side_cfg.enabled else None
+    detector = KnockDetector(det_cfg, side_classifier=side_clf)
 
-    # Triple-tap instant-mute is OFF in production: on a hot/noisy mic the onset
-    # detector can form a spurious TRIPLE_TAP, and a quick action fires WITHOUT
-    # listening -- muting the system on a false knock (confusing + destructive).
-    # A triple-tap now just listens like a double-tap. Opt back in with
-    # MIKO_QUICK_MUTE=1 once the mic env is clean.
-    quick_action = DEFAULT_QUICK_ACTION if os.environ.get("MIKO_QUICK_MUTE") else None
-
-    app = App(
-        brain=brain,
-        dispatcher=None,  # set below once run_skill is bound
-        matcher=matcher,
-        loader=loader,
-        vad=vad,
-        transcriber=transcriber,
-        detector=detector,
-        frames=frames,
-        chime=_make_chime(),
-        speak=_make_speak(),
-        cooldown=COOLDOWN_S,
-        quick_action=quick_action,
-    )
-    app.dispatcher = Dispatcher(actions, skill_runner=app.run_skill)
-
+    ring = RingBuffer(seconds=10.0)
     device = args.device if args.device is not None else _resolve_device(cal)
-    capture = CaptureLoop(ring_buffer, device=device)
-    return app, detector, capture, ring_buffer, stop_event
+    capture = CaptureLoop(
+        ring, device=device,
+        channels=(max(side_cfg.left_ch, side_cfg.right_ch) + 1) if side_cfg.enabled else 1,
+        side_buffer=side_buffer,
+    )
+
+    def session_factory(on_state):
+        from .realtime import RealtimeSession
+        return RealtimeSession(device=device, on_state=on_state,
+                               attach_screen=not args.no_screen)
+
+    miko = Miko(
+        detector=detector,
+        sides_enabled=side_cfg.enabled,
+        session_factory=None if args.no_agent else session_factory,
+    )
+    return miko, detector, capture, ring, side_cfg
 
 
-def _resolve_device(cal_path):
+def _load_calibration(path):
     import json
-    if Path(cal_path).exists():
-        try:
-            return int(json.loads(Path(cal_path).read_text())["device_index"])
-        except Exception:
-            pass
-    return None  # sounddevice default input device
+    if not Path(path).exists():
+        return {}
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception as exc:
+        log_event("calibration_load_error", error=str(exc))
+        return {}
+
+
+def _resolve_device(cal):
+    try:
+        return int(cal["device_index"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="miko", description="Knock-summoned desktop agent")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--mock", action="store_true", default=True,
-                       help="use the MockBrain (default; zero spend)")
-    group.add_argument("--real", action="store_true",
-                       help="use the CodexBrain (spends model quota)")
-    parser.add_argument("--thump", action="store_true",
-                        help="SIMPLE mode: any loud chassis thump wakes Miko")
-    parser.add_argument("--device", type=int, default=None,
-                        help="override the input device index")
-    parser.add_argument("--calibrate", action="store_true",
-                        help="run the knock calibration wizard and exit")
-    parser.add_argument("--no-overlay", action="store_true",
-                        help="run headless without the on-screen overlay")
-    args = parser.parse_args(argv)
+    p = argparse.ArgumentParser(prog="miko", description="Knock-summoned desktop agent")
+    p.add_argument("--calibrate", action="store_true", help="run the knock calibration wizard")
+    p.add_argument("--calibrate-sides", action="store_true", help="calibrate left/right knocks")
+    p.add_argument("--thump", action="store_true", help="SIMPLE mode: any loud thump wakes")
+    p.add_argument("--device", type=int, default=None, help="input device index")
+    p.add_argument("--no-sides", action="store_true", help="ignore side detection")
+    p.add_argument("--no-screen", action="store_true", help="don't send screenshots")
+    p.add_argument("--no-agent", action="store_true", help="instant actions only, no network")
+    p.add_argument("--no-overlay", action="store_true", help="run without the overlay")
+    args = p.parse_args(argv)
 
     if args.calibrate:
         from . import calibrate
         return calibrate.main()
+    if args.calibrate_sides:
+        from . import calibrate_sides
+        return calibrate_sides.main()
 
-    app, detector, capture, ring_buffer, stop_event = build_app(args)
-    from .ioi import IOIStateMachine
+    if not args.no_agent and not os.environ.get("OPENAI_API_KEY"):
+        print("OPENAI_API_KEY is not set — the agent will fail to connect.")
+        print("Get a key at platform.openai.com/api-keys, then:")
+        print('    setx OPENAI_API_KEY "sk-..."')
+        print("Continuing with instant actions only (--no-agent).\n")
+        args.no_agent = True
 
-    # Wider pairing window than the module default (0.45s): a natural
-    # "knock ... knock" is often slower than that and was being rejected as
-    # "too slow to be a pair", forcing users to repeat it. Env-tunable.
+    miko, detector, capture, ring, side_cfg = build(args)
+
+    overlay = None
+    if not args.no_overlay:
+        from .overlay import Overlay
+        overlay = Overlay()
+        miko.on_state = overlay.set_state
+
+    stop_event = threading.Event()
     ioi = IOIStateMachine(
         max_ioi=float(os.environ.get("MIKO_MAX_IOI", "0.6")),
         close_out=float(os.environ.get("MIKO_CLOSE_OUT", "0.75")),
     )
+
     capture.start()
-    worker = threading.Thread(
-        target=detector.run,
-        args=(ring_buffer, ioi, stop_event),
-        kwargs={"on_wake": app.on_wake},
-        daemon=True,
-    )
-    worker.start()
+    threading.Thread(
+        target=detector.run, args=(ring, ioi, stop_event),
+        kwargs={"on_wake": miko.on_wake}, daemon=True,
+    ).start()
 
-    overlay = None
-    if not args.no_overlay:
-        from .overlay import Overlay  # lazy import (keeps headless imports cheap)
-        overlay = Overlay()
-        app.observer = overlay.set_state  # App already supports observer
+    print("MIKO is listening.\n")
+    print(bindings.describe(side_cfg.enabled))
+    print("\nCtrl-C to quit.")
 
-    app.set_state(SLEEPING, detail="ready — knock twice")
-    print("Miko is listening. Knock twice on the chassis. Ctrl-C to quit.")
+    loop_thread = threading.Thread(target=lambda: asyncio.run(miko.run()), daemon=True)
+    loop_thread.start()
+
     try:
         if overlay is not None:
             overlay.run()
@@ -578,6 +355,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
+        miko.stop()
         stop_event.set()
         capture.stop()
         if overlay is not None:

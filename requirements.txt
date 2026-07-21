@@ -55,3 +55,7 @@ tokenizers==0.23.1
 tqdm==4.69.0
 typing_extensions==4.16.0
 urllib3==2.7.0
+openai>=2.46.0
+websockets>=13,<16
+Pillow>=11.0.0
+pytest-asyncio>=1.0.0

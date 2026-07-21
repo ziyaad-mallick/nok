@@ -6,6 +6,7 @@ restart/error logging happens outside the callback, from _on_finished.
 """
 import threading
 
+import numpy as np
 import sounddevice as sd
 
 from .logs import log_event
@@ -14,6 +15,7 @@ from .ring_buffer import SAMPLE_RATE, RingBuffer
 BLOCKSIZE = 512
 CHANNELS = 1
 DTYPE = "float32"
+MAX_CHANNELS = 4  # Intel Smart Sound arrays expose 4; we only compare two
 MAX_CONSECUTIVE_FAILURES = 3
 
 STATUS_STOPPED = "STOPPED"
@@ -37,12 +39,19 @@ class CaptureLoop:
         sample_rate: int = SAMPLE_RATE,
         blocksize: int = BLOCKSIZE,
         max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES,
+        channels: int = CHANNELS,
+        side_buffer=None,
     ):
         self.ring_buffer = ring_buffer
         self.device = device
         self.sample_rate = sample_rate
         self.blocksize = blocksize
         self.max_consecutive_failures = max_consecutive_failures
+        # >1 channel is only ever requested to feed side detection; the
+        # detector itself always consumes the mono downmix below.
+        self.channels = max(1, int(channels))
+        self.side_buffer = side_buffer
+        self._samples_written = 0
 
         self._stream = None
         self._consecutive_failures = 0
@@ -78,10 +87,21 @@ class CaptureLoop:
     # -- internal --------------------------------------------------------
 
     def _callback(self, indata, frames, time_info, status):
-        # NOTE: allocation-free by design. No prints, no logging calls here.
+        # NOTE: kept cheap by design. No prints, no logging calls here.
         if status:
             self.last_status_flags = status
-        self.ring_buffer.write(indata[:, 0])
+
+        if self.side_buffer is not None and indata.shape[1] > 1:
+            # One peak per channel, stamped with the END time of this block so
+            # it lines up with the detector's own sample-derived timestamps.
+            self._samples_written += frames
+            t = self._samples_written / self.sample_rate
+            self.side_buffer.write(t, np.max(np.abs(indata), axis=0))
+
+        # The classifier is mono and tested as mono: downmix rather than
+        # picking ch0, so a dead channel can't silence detection outright.
+        mono = indata[:, 0] if indata.shape[1] == 1 else indata.mean(axis=1)
+        self.ring_buffer.write(mono)
 
     def _on_finished(self) -> None:
         if self._stop_flag.is_set():
@@ -94,7 +114,7 @@ class CaptureLoop:
                 samplerate=self.sample_rate,
                 blocksize=self.blocksize,
                 device=self.device,
-                channels=CHANNELS,
+                channels=self.channels,
                 dtype=DTYPE,
                 callback=self._callback,
                 finished_callback=self._on_finished,

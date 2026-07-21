@@ -41,6 +41,7 @@ import numpy as np
 from .ioi import DOUBLE_TAP, TRIPLE_TAP
 from .logs import log_event
 from .ring_buffer import SAMPLE_RATE
+from .side import UNKNOWN
 
 BLOCKSIZE = 512  # mirrors miko.audio.BLOCKSIZE (not imported to stay sounddevice-free)
 
@@ -123,8 +124,12 @@ def _consumed_after_chunk(total_before: int, total_now: int, sr: int) -> int:
 class KnockDetector:
     """Stateful per-block knock classifier with playback/BUSY gating."""
 
-    def __init__(self, config: Optional[DetectorConfig] = None):
+    def __init__(self, config: Optional[DetectorConfig] = None, side_classifier=None):
         self.config = config or DetectorConfig()
+        # Optional: turns each onset timestamp into LEFT/RIGHT. None (or a
+        # classifier whose calibration failed) means every onset is UNKNOWN
+        # and the gesture map falls back to side-agnostic bindings.
+        self.side_classifier = side_classifier
         n = self.config.blocksize
         # Pre-compute window + rfft frequency axis once (hot-path allocation-free).
         self._window = np.hanning(n).astype(np.float32)
@@ -257,7 +262,7 @@ class KnockDetector:
                     now = (offset + i + bs) / sr
                     onset = self.process_block(block, now)
                     if onset is not None:
-                        self._emit(ioi.feed(onset), now, on_wake)
+                        self._emit(ioi.feed(onset, self._side_of(onset)), now, on_wake)
                     self._emit(ioi.poll(now), now, on_wake)
                 consumed = _consumed_after_chunk(total, ring_buffer.total_written, sr)
             except Exception as exc:
@@ -267,8 +272,19 @@ class KnockDetector:
                 log_event("detector_loop_error", error=str(exc))
                 time.sleep(idle_sleep)
 
+    def _side_of(self, onset: float) -> str:
+        """Classify an onset's side, never letting that break detection."""
+        if self.side_classifier is None:
+            return UNKNOWN
+        try:
+            return self.side_classifier.side_at(onset)
+        except Exception as exc:
+            log_event("side_classify_error", error=str(exc))
+            return UNKNOWN
+
     def _emit(self, decision, now, on_wake):
         if decision in (DOUBLE_TAP, TRIPLE_TAP):
-            log_event("wake", pattern=decision, t=now)
+            side = getattr(decision, "side", UNKNOWN)
+            log_event("wake", pattern=str(decision), side=side, t=now)
             if on_wake is not None:
                 on_wake(decision, now)

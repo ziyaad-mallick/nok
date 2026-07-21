@@ -34,9 +34,26 @@ back to the count-based rules -- no restructuring required.
 """
 from typing import List, Optional
 
+from .side import UNKNOWN, majority_side
+
 DOUBLE_TAP = "DOUBLE_TAP"
 TRIPLE_TAP = "TRIPLE_TAP"
 NONE = "NONE"
+
+
+class Decision(str):
+    """A pattern verdict that also remembers which side the chain landed on.
+
+    Subclasses `str` so every existing `decision == DOUBLE_TAP` comparison,
+    log line and dict key keeps working untouched; `.side` is additive.
+    """
+
+    __slots__ = ("side",)
+
+    def __new__(cls, pattern: str, side: str = UNKNOWN):
+        obj = super().__new__(cls, pattern)
+        obj.side = side
+        return obj
 
 # Timing windows (seconds). Tunable per-machine via the constructor.
 MIN_IOI = 0.120   # faster than this between onsets = mechanical bounce, ignore
@@ -61,13 +78,15 @@ class IOIStateMachine:
         self.max_ioi = max_ioi
         self.close_out = close_out
         self._chain: List[float] = []
+        self._sides: List[str] = []
         self._poisoned = False
 
     def reset(self) -> None:
         self._chain = []
+        self._sides = []
         self._poisoned = False
 
-    def feed(self, ts: float) -> Optional[str]:
+    def feed(self, ts: float, side: str = UNKNOWN) -> Optional[str]:
         """Register an onset at time `ts`.
 
         Returns a decision string ONLY when this onset finalizes a *previous*
@@ -76,6 +95,7 @@ class IOIStateMachine:
         """
         if not self._chain:
             self._chain = [ts]
+            self._sides = [side]
             self._poisoned = False
             return None
 
@@ -90,6 +110,7 @@ class IOIStateMachine:
             # a fresh chain from this onset.
             decision = self._finalize()
             self._chain = [ts]
+            self._sides = [side]
             self._poisoned = False
             return decision
 
@@ -99,8 +120,10 @@ class IOIStateMachine:
             # works, but the chain is doomed to classify as NONE.
             self._poisoned = True
             self._chain[-1] = ts
+            self._sides[-1] = side
         else:
             self._chain.append(ts)
+            self._sides.append(side)
         return None
 
     def poll(self, now: float) -> Optional[str]:
@@ -114,6 +137,7 @@ class IOIStateMachine:
         if now - self._chain[-1] > self.close_out:
             decision = self._finalize()
             self._chain = []
+            self._sides = []
             self._poisoned = False
             return decision
         return None
@@ -121,9 +145,10 @@ class IOIStateMachine:
     # -- internal --------------------------------------------------------
 
     def _finalize(self) -> str:
+        side = majority_side(self._sides)
         if self._poisoned:
-            return NONE
-        return self._classify(self._chain)
+            return Decision(NONE, side)
+        return Decision(self._classify(self._chain), side)
 
     def _classify(self, chain: List[float]) -> str:
         """Map a closed chain to a decision.
