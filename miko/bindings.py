@@ -68,16 +68,30 @@ def resolve(pattern: str, side: str = UNKNOWN, *, sides_enabled: bool = True) ->
     return BINDINGS[SCREENSHOT]
 
 
-def describe(sides_enabled: bool) -> str:
-    """One-screen summary of the live gesture map, for startup output."""
+def describe(sides_enabled: bool, agent_enabled: bool = True) -> str:
+    """One-screen summary of the live gesture map, for startup output.
+
+    Never advertises a gesture that is not actually wired up: printing
+    "wake the agent" when the agent is disabled sends the user knocking at
+    something that cannot answer.
+    """
+    lines = []
     if sides_enabled:
-        return (
-            "  knock knock  (right side)  ->  screenshot\n"
-            "  knock knock  (left side)   ->  play / pause\n"
-            "  knock knock knock          ->  wake the agent"
-        )
-    return (
-        "  knock knock                ->  screenshot\n"
-        "  knock knock knock          ->  wake the agent\n"
-        "  (side detection off -- media control unavailable)"
-    )
+        lines.append("  knock knock  (right side)  ->  screenshot")
+        lines.append("  knock knock  (left side)   ->  play / pause")
+    else:
+        lines.append("  knock knock                ->  screenshot")
+
+    if agent_enabled:
+        lines.append("  knock knock knock          ->  wake the agent")
+    else:
+        lines.append("  knock knock knock          ->  (agent off)")
+
+    notes = []
+    if not sides_enabled:
+        notes.append("side detection off -- media control unavailable")
+    if not agent_enabled:
+        notes.append("agent off -- no API quota; instant actions only")
+    for n in notes:
+        lines.append(f"  ({n})")
+    return "\n".join(lines)

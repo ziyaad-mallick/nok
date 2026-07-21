@@ -365,7 +365,7 @@ def main(argv=None):
     ).start()
 
     print("MIKO is listening.\n")
-    print(bindings.describe(side_cfg.enabled))
+    print(bindings.describe(side_cfg.enabled, agent_enabled=not args.no_agent))
     print("\nCtrl-C to quit.")
 
     loop_thread = threading.Thread(target=lambda: asyncio.run(miko.run()), daemon=True)
