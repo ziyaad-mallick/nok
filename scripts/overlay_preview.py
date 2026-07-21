@@ -1,14 +1,19 @@
-"""Replay a scripted demo through the real overlay window so the user can
-screen-record / QA it. Opens a window and BLOCKS — do not run this in a headless
-or automated context.
+"""Replay a scripted conversation through the real overlay window.
+
+Opens a window and BLOCKS — not for headless/automated contexts. Needs no API
+key, no microphone and no knocking, so it is the fastest way to QA the visual
+language or record b-roll.
 
     .venv/Scripts/python.exe scripts/overlay_preview.py
 
-A background thread drives the states on a timeline (the overlay's set_state is
-thread-safe); the main thread owns the tkinter mainloop. The THINKING beat is a
-deliberate ~25s hold so you can verify the animation stays alive/honest through
-a realistic model latency. Ctrl-C to quit early.
+A background thread drives states AND synthesises speech-shaped amplitude, so
+the audio-reactive rings and orb behave exactly as they do against a live
+session. The syllable envelope is what makes this a real preview rather than a
+slideshow — a flat level would make every state look alive and hide exactly the
+bugs this exists to catch.
 """
+import math
+import random
 import sys
 import threading
 import time
@@ -18,35 +23,56 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from miko.overlay import Overlay  # noqa: E402
 
-# (delay_before, state, detail) — delay is seconds to wait before sending it.
+# (state, detail, seconds, audio_source or None)
 SCRIPT = [
-    (0.0, "SLEEPING", "ready — knock twice"),
-    (6.0, "LISTENING", "woke on DOUBLE_TAP"),
-    (3.0, "THINKING", "open spotify"),
-    (25.0, "ACTING", "open_app"),          # ~25s honest THINKING hold
-    (3.0, "SLEEPING", "cycle complete"),   # -> DONE resolve, then idle
-    (5.0, "LISTENING", "woke on TRIPLE_TAP"),
-    (2.5, "TEACHING", "learn a new trick: greet the room"),
-    (8.0, "SLEEPING", "cycle complete"),   # -> DONE resolve, then idle
-    (5.0, "ERROR", "brain timed out"),
-    (3.0, "SLEEPING", "cycle complete"),   # -> sticky error, then idle
-    (8.0, "SLEEPING", "cycle complete"),   # settle
+    ("SLEEPING",  "ready",                      3.0, None),
+    ("WOKE",      "summoned",                   0.3, None),
+    ("LISTENING", "woke on TRIPLE_TAP",         3.5, "mic"),
+    ("THINKING",  "what's on my screen?",       1.2, None),
+    ("SPEAKING",  "",                           5.0, "out"),
+    ("LISTENING", "your turn",                  2.5, "mic"),
+    ("SPEAKING",  "",                           3.5, "out"),
+    ("ACTING",    "screenshot",                 0.8, None),
+    ("SLEEPING",  "session closed",             3.0, None),
+    ("WOKE",      "summoned",                   0.3, None),
+    ("LISTENING", "woke on DOUBLE_TAP",         1.5, "mic"),
+    ("ERROR",     "socket closed unexpectedly", 4.5, None),
+    ("SLEEPING",  "recovered",                  3.0, None),
 ]
 
+TICK = 1 / 30.0
 
-def _drive(overlay, stop):
-    for delay, state, detail in SCRIPT:
-        if stop.wait(delay):
-            return
-        overlay.set_state(state, detail)
+
+def speech_envelope(t):
+    """Amplitude shaped like talking: ~4Hz syllables inside phrases, with real
+    gaps for breath between them."""
+    phrase = 0.0 if (t % 4.2) > 3.2 else 1.0
+    syllable = 0.5 + 0.5 * math.sin(2 * math.pi * 4.0 * t)
+    jitter = random.uniform(0.85, 1.15)
+    return phrase * (0.05 + 0.28 * syllable ** 2) * jitter
+
+
+def drive(overlay, stop):
+    time.sleep(0.6)  # let the window map before the first beat
+    while not stop.is_set():
+        for state, detail, hold, source in SCRIPT:
+            if stop.is_set():
+                return
+            overlay.set_state(state, detail)
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < hold:
+                if stop.is_set():
+                    return
+                if source:
+                    overlay.set_level(source, speech_envelope(time.monotonic() - t0))
+                time.sleep(TICK)
 
 
 def main():
     overlay = Overlay()
     stop = threading.Event()
-    driver = threading.Thread(target=_drive, args=(overlay, stop), daemon=True)
-    driver.start()
-    print("Overlay preview running. Screen-record now. Ctrl-C to quit.")
+    threading.Thread(target=drive, args=(overlay, stop), daemon=True).start()
+    print("Overlay preview running — Ctrl-C to quit.")
     try:
         overlay.run()
     except KeyboardInterrupt:
