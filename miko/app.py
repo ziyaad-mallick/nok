@@ -282,6 +282,10 @@ def build(args):
     )
 
     def session_factory(on_state):
+        if args.local:
+            from .local import LocalSession
+            return LocalSession(device=device, on_state=on_state,
+                                attach_screen=not args.no_screen)
         from .realtime import RealtimeSession
         return RealtimeSession(device=device, on_state=on_state,
                                attach_screen=not args.no_screen)
@@ -320,6 +324,8 @@ def main(argv=None):
     p.add_argument("--device", type=int, default=None, help="input device index")
     p.add_argument("--no-sides", action="store_true", help="ignore side detection")
     p.add_argument("--no-screen", action="store_true", help="don't send screenshots")
+    p.add_argument("--local", action="store_true",
+                   help="run the agent fully locally via Ollama (no API key, no network)")
     p.add_argument("--no-agent", action="store_true", help="instant actions only, no network")
     p.add_argument("--no-overlay", action="store_true", help="run without the overlay")
     args = p.parse_args(argv)
@@ -331,12 +337,18 @@ def main(argv=None):
         from . import calibrate_sides
         return calibrate_sides.main()
 
-    if not args.no_agent and not os.environ.get("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY is not set — the agent will fail to connect.")
-        print("Get a key at platform.openai.com/api-keys, then:")
-        print('    setx OPENAI_API_KEY "sk-..."')
-        print("Continuing with instant actions only (--no-agent).\n")
-        args.no_agent = True
+    if not args.no_agent and not args.local and not os.environ.get("OPENAI_API_KEY"):
+        # No key: prefer a local model over silently disabling the agent.
+        from .local import pick_model
+        model, _vision = pick_model()
+        if model:
+            print(f"No OPENAI_API_KEY — using the local model '{model}' via Ollama.\n")
+            args.local = True
+        else:
+            print("No OPENAI_API_KEY and no local model, so the agent is off.")
+            print("  Either:  setx OPENAI_API_KEY \"sk-...\"")
+            print("  Or:      ollama pull moondream    (then run with --local)\n")
+            args.no_agent = True
 
     miko, detector, capture, ring, side_cfg = build(args)
 
