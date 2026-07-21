@@ -68,11 +68,27 @@ def drive(overlay, stop):
                 time.sleep(TICK)
 
 
+BANNER = """
+==============================================================
+  OVERLAY PREVIEW - this is a SCRIPTED ANIMATION, not the app.
+==============================================================
+  It does NOT listen to your microphone.  Knocking does nothing.
+  It does NOT take screenshots.  The "screenshot" beat is fake.
+  It does NOT play audio.  The SPEAKING state is silent by design.
+
+  It exists only to check colour, motion, position and timing.
+
+  To run MIKO for real:      .venv\\Scripts\\python.exe -m miko
+==============================================================
+"""
+
+
 def main():
+    print(BANNER)
     overlay = Overlay()
     stop = threading.Event()
     threading.Thread(target=drive, args=(overlay, stop), daemon=True).start()
-    print("Overlay preview running — Ctrl-C to quit.")
+    print("Preview running. Ctrl-C to quit.")
     try:
         overlay.run()
     except KeyboardInterrupt:
