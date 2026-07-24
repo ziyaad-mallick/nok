@@ -35,18 +35,6 @@ def _():
     return f"v{sounddevice.__version__}"
 
 
-@check("librosa")
-def _():
-    import librosa
-    return f"v{librosa.__version__}"
-
-
-@check("onnxruntime")
-def _():
-    import onnxruntime
-    return f"v{onnxruntime.__version__}"
-
-
 @check("faster_whisper (import)")
 def _():
     import faster_whisper
@@ -79,30 +67,6 @@ def _():
     return f"v{pytest.__version__}"
 
 
-def _silero_vad_onnx_check():
-    """silero-vad's pip package hard-requires torch/torchaudio in its base
-    install (Requires-Dist: torch>=1.12.0, torchaudio>=0.12.0 — confirmed
-    against silero-vad 6.2.1 metadata). This project stays torch-free, so
-    silero-vad is not installed and this check is a SKIP, not a FAIL.
-    Energy endpointing is the fallback voice-activity detector.
-    """
-    try:
-        import importlib
-        importlib.import_module("silero_vad")
-    except ImportError:
-        results.append((
-            "silero-vad (onnx)",
-            "SKIP",
-            "not installed: pip package requires torch/torchaudio as a hard "
-            "dependency; staying torch-free per project policy. Fallback: "
-            "energy endpointing.",
-        ))
-        return
-    from silero_vad import load_silero_vad
-    load_silero_vad(onnx=True)
-    results.append(("silero-vad (onnx)", "OK", "loaded via onnx"))
-
-
 @check("faster_whisper small.en (load)")
 def _():
     from faster_whisper import WhisperModel
@@ -122,8 +86,6 @@ def _():
 
 
 def main():
-    _silero_vad_onnx_check()
-
     name_w = max(len(n) for n, _, _ in results)
     any_fail = False
     for name, status, detail in results:

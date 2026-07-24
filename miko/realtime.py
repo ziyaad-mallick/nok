@@ -410,7 +410,16 @@ class RealtimeSession:
         """Stream mic chunks until cancelled. Blocking reads go to a thread so
         they never stall the event loop."""
         while not self._stop.is_set():
-            chunk = await asyncio.to_thread(self.mic.read_pcm16)
+            try:
+                chunk = await asyncio.to_thread(self.mic.read_pcm16)
+            except Exception as exc:
+                # The read itself can throw (resampler, device yanked). This
+                # task is only awaited in run()'s finally, so an unguarded
+                # raise here left the overlay sitting on "your turn" with a
+                # dead microphone until the 120s idle timeout.
+                log_event("mic_read_failed", error=str(exc))
+                self.on_state("ERROR", "microphone stopped")
+                return
             if chunk is None:
                 continue
             try:
@@ -477,25 +486,35 @@ class RealtimeSession:
         self.on_state("ACTING", name)
         log_event("tool_call", name=name, args=args)
 
-        if name == "take_screenshot":
-            url = await asyncio.to_thread(self._grab)
-            if url:
-                await conn.conversation.item.create(item={
-                    "type": "message", "role": "user",
-                    "content": [{"type": "input_image", "image_url": url}],
-                })
-            result = "Screenshot captured." if url else "Screenshot failed."
-        elif name == "media_control":
-            from .actions import _MEDIA_VK, _tap_vk
-            cmd = (args.get("command") or "").lower()
-            vk = _MEDIA_VK.get(cmd)
-            if vk is None:
-                result = f"Unknown media command: {cmd}"
+        # A tool that throws used to propagate all the way out of _consume and
+        # tear down the whole conversation, so one failed screenshot cost you
+        # the session and another triple-knock. Report it to the model instead
+        # and let the conversation carry on.
+        try:
+            if name == "take_screenshot":
+                url = await asyncio.to_thread(self._grab)
+                if url:
+                    await conn.conversation.item.create(item={
+                        "type": "message", "role": "user",
+                        "content": [{"type": "input_image", "image_url": url}],
+                    })
+                result = "Screenshot captured." if url else "Screenshot failed."
+            elif name == "media_control":
+                from .actions import _MEDIA_VK, _tap_vk
+                cmd = (args.get("command") or "").lower()
+                vk = _MEDIA_VK.get(cmd)
+                if vk is None:
+                    result = f"Unknown media command: {cmd}"
+                else:
+                    await asyncio.to_thread(_tap_vk, vk)
+                    result = f"Media: {cmd}."
             else:
-                await asyncio.to_thread(_tap_vk, vk)
-                result = f"Media: {cmd}."
-        else:
-            result = f"Unknown tool: {name}"
+                result = f"Unknown tool: {name}"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_event("tool_failed", name=name, error=repr(exc))
+            result = f"That didn't work: {exc}"
 
         if call_id:
             await conn.conversation.item.create(item={

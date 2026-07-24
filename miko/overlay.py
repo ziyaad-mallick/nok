@@ -25,60 +25,45 @@ import time
 from .logs import log_event
 
 # ---------------------------------------------------------------------------
-# Design tokens — "Ember": a warm, muted family (cooling ash -> glowing coal)
-# instead of a stock UI-kit swatch per state. One coherent value/chroma
-# curve so every accent still reads as part of the same object.
+# Design tokens live in tokens.py — colour, type scale, spacing scale, motion,
+# and a DPI-aware Layout. They are re-exported here because this module is the
+# public face of the HUD and both the tests and the preview script import the
+# timing constants straight from it.
 # ---------------------------------------------------------------------------
-PANEL = "#15120E"
-TEXT_PRIMARY = "#F4EEE4"
-TEXT_SECONDARY = "#A79C8C"
-TEXT_TRANSCRIPT = "#E6DCC8"
-SHADOW = "#0A0705"       # crisp offset drop-shadow sliver (no blur on Canvas)
-CORNER_RADIUS = 24       # near-full pill at compact height, soft card at expanded
-KEY = "#010203"  # transparent-color key, never used in the palette
-
-# Per-state accent — one hue each, never reused.
-_ACCENTS = {
-    "SLEEPING": "#726A5C",   # cooling ash — never rendered (SLEEPING is invisible)
-    "WOKE": "#F4EEE4",       # near-white spark — deliberately not a hue: "heard you"
-    "LISTENING": "#3FD1C0",  # bright teal — ears open
-    "THINKING": "#9B80E8",   # amethyst — turning it over
-    "SPEAKING": "#E8A83D",   # warm gold — Miko has the floor
-    "ACTING": "#5BC98A",     # jade — doing it
-    "TEACHING": "#E8A83D",   # retired with teach mode; kept so old events render
-    "ERROR": "#E1604A",      # glowing coal-red — something's wrong
-    "DONE": "#5BC98A",       # same hue as ACTING — landed cleanly
-    "NEUTRAL": "#8C8175",
-}
+from .tokens import (  # noqa: F401  (re-exported on purpose)
+    ACCENTS as _ACCENTS,
+    DONE_HOLD,
+    ERROR_MAX_LINK,
+    ERROR_STICKY,
+    FONT_MONO,
+    KEY,
+    LEVEL_CURVE,
+    LEVEL_GAIN,
+    NOISE_FLOOR,
+    PANEL,
+    RING_LIFE_IN,
+    RING_LIFE_OUT,
+    RING_MIN_GAP,
+    RING_ONSET,
+    SHADOW,
+    SIZE_EASE,
+    SLEEP_DIM_AFTER,
+    TAU_ATTACK,
+    TAU_DECAY,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    TEXT_TRANSCRIPT,
+    WOKE_HOLD,
+    Layout,
+)
 
 _THINK_VERBS = ["Thinking", "Reading the screen", "Working it out"]
 
-# Two sizes.
-_COMPACT = (380, 64)
-_EXPANDED = (560, 104)
+_DEFAULT_LAYOUT = Layout()
+_COMPACT = (_DEFAULT_LAYOUT.compact_w, _DEFAULT_LAYOUT.compact_h)
+_EXPANDED = (_DEFAULT_LAYOUT.expanded_w, _DEFAULT_LAYOUT.expanded_h)
+CORNER_RADIUS = _DEFAULT_LAYOUT.radius
 _EXPANDED_MODES = frozenset({"THINKING", "TEACHING", "ACTING", "ERROR", "DONE"})
-
-# Timing constants (seconds).
-SIZE_EASE = 0.18       # size change eases over ~180ms
-WOKE_HOLD = 0.22       # the "I heard you" spark before LISTENING takes over
-DONE_HOLD = 1.8        # DONE resolve holds before fading to SLEEPING
-ERROR_STICKY = 4.0     # hold the error visual this long since ERROR entered
-ERROR_MAX_LINK = 6.0   # only treat SLEEPING as an error-release if within this
-SLEEP_DIM_AFTER = 6.0  # SLEEPING dims alpha after this many idle seconds
-
-# -- audio-reactive level (see docs/design-review-v2.md §5) -----------------
-# Constants borrowed from clicky_windows' waveform driver, a sibling product
-# that solved the same problem against real mic input.
-NOISE_FLOOR = 0.008    # below this, treat as silence
-LEVEL_GAIN = 2.85      # raw RMS rarely exceeds ~0.35; this maps that to ~1.0
-LEVEL_CURVE = 0.76     # <1 compresses perceptually: quiet speech still moves
-TAU_ATTACK = 0.05      # ~50ms rise — reads as instant
-TAU_DECAY = 0.25       # ~250ms fall — no flicker between syllables
-
-RING_ONSET = 0.15      # level crossing that spawns a new sonar ring
-RING_MIN_GAP = 0.25    # never spawn rings faster than this
-RING_LIFE_IN = 0.40    # LISTENING rings collapse inward over this
-RING_LIFE_OUT = 0.55   # SPEAKING rings expand outward, slightly slower
 
 
 # ---------------------------------------------------------------------------
@@ -506,12 +491,6 @@ class Overlay:
     that still drains the queue, so ``python -m miko`` keeps running headless.
     """
 
-    _FONT_TITLE = ("Segoe UI", 15, "bold")
-    _FONT_LABEL = ("Segoe UI", 10, "bold")
-    _FONT_TRANSCRIPT = ("Segoe UI", 13, "italic")
-    _FONT_GLYPH = ("Segoe UI", 14, "bold")  # bigger than the label font so the
-                                             # ERROR "!" actually reads at a glance
-
     def __init__(self, model=None):
         self.model = model or OverlayModel()
         self._queue = queue.Queue()
@@ -521,10 +500,9 @@ class Overlay:
         self._closed = False
         self._last_topmost = 0.0
         self._last_view = None
-        # window geometry: fixed at the expanded size, pill drawn centered
-        # within so size changes never thrash window geometry (only shake does).
-        self._win_w = _EXPANDED[0] + 8
-        self._win_h = _EXPANDED[1] + 16
+        # Replaced in _build() with one scaled to the display's real DPI.
+        self.layout = Layout()
+        self._apply_layout(self.layout)
         self._base_x = 0
         self._base_y = 0
 
@@ -533,6 +511,14 @@ class Overlay:
         except Exception as exc:  # no display / tkinter unavailable -> no-op
             log_event("overlay_init_failed", error=str(exc))
             self._root = None
+
+    def _apply_layout(self, layout):
+        """Adopt a layout: window box is the card plus its shadow margin."""
+        self.layout = layout
+        # Fixed at the expanded size with the pill drawn centred inside, so a
+        # size change never thrashes window geometry (only the error shake does).
+        self._win_w = layout.expanded_w + layout.margin_x
+        self._win_h = layout.expanded_h + layout.margin_y
 
     # -- thread-safe input (called from the detector/worker thread) --------
 
@@ -607,10 +593,16 @@ class Overlay:
             pass
         root.configure(bg=KEY)
 
+        # Build the whole layout against this display. Assuming 96 DPI is the
+        # classic Windows desktop bug: at 150% scaling the card stayed 568px
+        # wide while Tk grew the point-sized text to fit a bigger screen, so
+        # the title ran straight out of the pill.
+        self._apply_layout(Layout.at(self._dpi_scale(root)))
+
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
         self._base_x = (sw - self._win_w) // 2
-        self._base_y = sh - self._win_h - 96
+        self._base_y = sh - self._win_h - self.layout.bottom_gap
         root.geometry(f"{self._win_w}x{self._win_h}+{self._base_x}+{self._base_y}")
 
         canvas = tk.Canvas(
@@ -627,6 +619,14 @@ class Overlay:
         root.update_idletasks()
         self._make_click_through()
         root.after(33, self._tick)
+
+    @staticmethod
+    def _dpi_scale(root):
+        """Display scale factor, 1.0 at 96 DPI. Never below 1.0."""
+        try:
+            return max(1.0, float(root.winfo_fpixels("1i")) / 96.0)
+        except Exception:
+            return 1.0
 
     def _make_click_through(self):
         """Clicks pass through, hidden from alt-tab, and can never take focus.
@@ -679,25 +679,27 @@ class Overlay:
         self._items["glow"] = c.create_oval(0, 0, 0, 0, fill=PANEL, outline="")
         self._items["orb"] = c.create_oval(0, 0, 0, 0, fill=PANEL, outline="")
         self._items["arc"] = c.create_arc(
-            0, 0, 0, 0, style="arc", width=3, outline=PANEL, state="hidden",
+            0, 0, 0, 0, style="arc", width=self.layout.stroke, outline=PANEL,
+            state="hidden",
         )
         self._items["ring1"] = c.create_oval(0, 0, 0, 0, outline=KEY, state="hidden")
         self._items["ring2"] = c.create_oval(0, 0, 0, 0, outline=KEY, state="hidden")
         self._items["check"] = c.create_line(
-            0, 0, 0, 0, 0, 0, fill=PANEL, width=3, state="hidden",
+            0, 0, 0, 0, 0, 0, fill=PANEL, width=self.layout.stroke, state="hidden",
         )
         self._items["glyph"] = c.create_text(
-            0, 0, text="", fill=TEXT_PRIMARY, font=self._FONT_LABEL, state="hidden",
+            0, 0, text="", fill=TEXT_PRIMARY, font=self.layout.font_glyph,
+            state="hidden",
         )
         # text columns
         self._items["title"] = c.create_text(
-            0, 0, text="", anchor="w", fill=TEXT_PRIMARY, font=self._FONT_TITLE,
+            0, 0, text="", anchor="w", fill=TEXT_PRIMARY, font=self.layout.font_title,
         )
         self._items["state"] = c.create_text(
-            0, 0, text="", anchor="w", fill=TEXT_SECONDARY, font=self._FONT_LABEL,
+            0, 0, text="", anchor="w", fill=TEXT_SECONDARY, font=self.layout.font_label,
         )
         self._items["line2"] = c.create_text(
-            0, 0, text="", anchor="w", fill=TEXT_SECONDARY, font=self._FONT_LABEL,
+            0, 0, text="", anchor="w", fill=TEXT_SECONDARY, font=self.layout.font_label,
         )
         self._items["timer"] = c.create_text(
             0, 0, text="", anchor="e", fill=TEXT_SECONDARY, font=self._timer_font(),
@@ -710,8 +712,12 @@ class Overlay:
             families = set(tkfont.families(self._root))
         except Exception:
             families = set()
-        family = "Cascadia Mono" if "Cascadia Mono" in families else "Consolas"
-        return (family, 11)
+        for family in FONT_MONO:
+            if family in families:
+                break
+        else:
+            family = FONT_MONO[-1]
+        return self.layout.font_mono(family)
 
     # -- the single 30fps loop --------------------------------------------
 
@@ -799,10 +805,13 @@ class Overlay:
         right = cx + w / 2
         bottom = cy + h / 2
 
-        # shadow sits 3px lower than the pill so a sliver peeks out at the
+        lay = self.layout
+        # shadow sits slightly lower than the pill so a sliver peeks out at the
         # bottom edge — a cheap but legible stand-in for a blurred drop shadow.
-        c.coords(it["shadow"], *self._rounded_points(left, top + 3, right, bottom + 3, CORNER_RADIUS))
-        c.coords(it["pill"], *self._rounded_points(left, top, right, bottom, CORNER_RADIUS))
+        off = lay.shadow_offset
+        c.coords(it["shadow"],
+                 *self._rounded_points(left, top + off, right, bottom + off, lay.radius))
+        c.coords(it["pill"], *self._rounded_points(left, top, right, bottom, lay.radius))
         if v["mode"] in ("DONE", "ERROR"):
             outline_color, outline_w = accent, 2
         else:
@@ -814,14 +823,15 @@ class Overlay:
         # orb column: layered halo (dim -> bright) faking a radial glow,
         # topped with the solid core.
         orb = v["orb"]
-        orad = 13.0 * orb["scale"]
-        ocx = left + 34
+        orad = lay.orb_radius * orb["scale"]
+        ocx = left + lay.orb_x
         ocy = cy
-        c.coords(it["halo3"], ocx - orad - 12, ocy - orad - 12, ocx + orad + 12, ocy + orad + 12)
+        h3, h2, h1 = lay.halo_3, lay.halo_2, lay.halo_1
+        c.coords(it["halo3"], ocx - orad - h3, ocy - orad - h3, ocx + orad + h3, ocy + orad + h3)
         c.itemconfigure(it["halo3"], fill=lerp_hex(accent, PANEL, 0.82))
-        c.coords(it["halo2"], ocx - orad - 7, ocy - orad - 7, ocx + orad + 7, ocy + orad + 7)
+        c.coords(it["halo2"], ocx - orad - h2, ocy - orad - h2, ocx + orad + h2, ocy + orad + h2)
         c.itemconfigure(it["halo2"], fill=lerp_hex(accent, PANEL, 0.6))
-        c.coords(it["glow"], ocx - orad - 3, ocy - orad - 3, ocx + orad + 3, ocy + orad + 3)
+        c.coords(it["glow"], ocx - orad - h1, ocy - orad - h1, ocx + orad + h1, ocy + orad + h1)
         c.itemconfigure(it["glow"], fill=lerp_hex(accent, PANEL, 0.3))
         c.coords(it["orb"], ocx - orad, ocy - orad, ocx + orad, ocy + orad)
         c.itemconfigure(it["orb"], fill=accent)
@@ -830,23 +840,24 @@ class Overlay:
         self._paint_rings(v["rings"], ocx, ocy)
 
         # text columns
-        tx = left + 62
+        tx = left + lay.text_x
+        gap = lay.line_gap
         dots = "." * v["ellipsis_dots"]
-        c.coords(it["title"], tx, cy - (16 if v["expanded"] else 0))
+        c.coords(it["title"], tx, cy - (gap if v["expanded"] else 0))
         c.itemconfigure(it["title"], text=v["title"] + dots, fill=TEXT_PRIMARY)
 
         if v["expanded"]:
             c.itemconfigure(it["state"], state="hidden")
-            self._paint_line2(v, tx, cy + 16, left, right)
+            self._paint_line2(v, tx, cy + gap, left, right)
         else:
             c.itemconfigure(it["state"], state="normal")
-            c.coords(it["state"], tx, cy + 16)
+            c.coords(it["state"], tx, cy + gap)
             c.itemconfigure(it["state"], text=v["line2"], fill=TEXT_SECONDARY)
             c.itemconfigure(it["line2"], state="hidden")
             c.itemconfigure(it["chip"], state="hidden")
 
         if v["timer_text"]:
-            c.coords(it["timer"], right - 20, cy - 16)
+            c.coords(it["timer"], right - lay.timer_inset, cy - gap)
             c.itemconfigure(it["timer"], text=v["timer_text"], state="normal",
                             fill=lerp_hex(accent, TEXT_SECONDARY, 0.4))
         else:
@@ -863,25 +874,26 @@ class Overlay:
             # colour, so it stays coherent whichever mode ever uses "chip".
             c.itemconfigure(it["chip"], state="normal", fill=lerp_hex(v["accent"], PANEL, 0.72))
             # size the chip to the text
-            tmp = c.create_text(tx + 8, ty, text=text, anchor="w",
+            px, py = self.layout.chip_pad_x, self.layout.chip_pad_y
+            tmp = c.create_text(tx + px, ty, text=text, anchor="w",
                                 font=self._timer_font())
             bx = c.bbox(tmp)
             c.delete(tmp)
             if bx:
-                c.coords(it["chip"], bx[0] - 8, bx[1] - 4, bx[2] + 8, bx[3] + 4)
+                c.coords(it["chip"], bx[0] - px, bx[1] - py, bx[2] + px, bx[3] + py)
             c.itemconfigure(it["line2"], state="normal", text=text,
                             fill=v["accent"], font=self._timer_font())
-            c.coords(it["line2"], tx + 8, ty)
+            c.coords(it["line2"], tx + px, ty)
         else:
             c.itemconfigure(it["chip"], state="hidden")
             if style == "transcript":
                 fill = TEXT_TRANSCRIPT
-                font = self._FONT_TRANSCRIPT
+                font = self.layout.font_transcript
                 # subtle up-slide on the quote "drop"
                 ty = ty + int(round((1.0 - v["line2_progress"]) * 6))
             else:
                 fill = TEXT_SECONDARY
-                font = self._FONT_LABEL
+                font = self.layout.font_label
             c.itemconfigure(it["line2"], state="normal", text=v["line2"],
                             fill=fill, font=font)
             c.coords(it["line2"], tx, ty)
@@ -921,7 +933,7 @@ class Overlay:
             # (both ~#0B0B0B) — effectively invisible. The mark now glows in
             # the accent colour against the hollow dark core, like a hot coal.
             c.itemconfigure(it["glyph"], text="!", state="normal",
-                            fill=accent, font=self._FONT_GLYPH)
+                            fill=accent, font=self.layout.font_glyph)
             c.coords(it["glyph"], ocx, ocy)
             c.itemconfigure(it["orb"], fill=PANEL)
             c.itemconfigure(it["glow"], fill=accent)

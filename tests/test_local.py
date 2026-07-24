@@ -176,3 +176,65 @@ def test_endpoint_constants_are_sane():
     assert local.MIN_SPEECH_S < local.MAX_UTTERANCE_S
     assert local.SILENCE_HANG_S < local.MAX_UTTERANCE_S
     assert local.NOISE_MULT > 1.0
+    assert local.MIN_GATE < local.MAX_GATE
+
+
+# -- the speech gate ------------------------------------------------------
+#
+# This is the maths that decides whether MIKO ever hears you. It used to be
+# recalculated from scratch every turn from one short room sample, which is
+# stable in a quiet room and wild in a live one -- the failure that ate the
+# Build Week demo. These tests pin the behaviour that replaced it.
+
+@pytest.fixture(autouse=True)
+def _fresh_room():
+    local.reset_room_noise()
+    yield
+    local.reset_room_noise()
+
+
+def test_silent_room_still_gets_a_floor():
+    """A room sampled at exactly zero is a broken mic, not a real silence."""
+    assert local.next_gate(0.0) == local.MIN_GATE
+
+
+def test_gate_scales_with_a_moderately_noisy_room():
+    gate = local.next_gate(0.004)
+    assert gate == pytest.approx(0.004 * local.NOISE_MULT)
+
+
+def test_gate_is_capped_so_a_loud_room_cannot_make_it_deaf():
+    """Over-triggering is recoverable. Never triggering is not."""
+    assert local.next_gate(1.0) == local.MAX_GATE
+
+
+def test_one_noisy_sample_does_not_swing_the_gate():
+    quiet = 0.002
+    for _ in range(20):
+        local.next_gate(quiet)          # settle on a quiet room
+    settled = local.next_gate(quiet)
+
+    spiked = local.next_gate(0.02)      # someone slams a door
+
+    # It must move -- but nowhere near the full distance to the spike.
+    unsmoothed = min(0.02 * local.NOISE_MULT, local.MAX_GATE)
+    assert spiked > settled
+    assert spiked < settled + (unsmoothed - settled) * 0.5
+
+
+def test_estimate_tracks_a_genuinely_changed_room():
+    """Smoothing must not mean never adapting -- a real change has to land."""
+    for _ in range(20):
+        local.next_gate(0.001)
+    for _ in range(20):
+        local.next_gate(0.01)
+
+    assert local.next_gate(0.01) == pytest.approx(0.01 * local.NOISE_MULT, rel=0.1)
+
+
+def test_reset_forgets_the_room():
+    for _ in range(10):
+        local.next_gate(0.01)
+    local.reset_room_noise()
+
+    assert local.next_gate(0.0) == local.MIN_GATE

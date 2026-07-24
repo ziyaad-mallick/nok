@@ -63,6 +63,11 @@ _KEYEVENTF_KEYUP = 0x0002
 
 def _tap_vk(vk: int) -> None:
     """Press and release a virtual key."""
+    if not hasattr(ctypes, "windll"):
+        # MIKO is a Windows product, but a curious stranger on a Mac deserves a
+        # sentence rather than a bare AttributeError out of the audio thread.
+        raise RuntimeError("Media keys use the Windows SendInput API; "
+                           "this action layer only runs on Windows.")
     down = _INPUT(type=_INPUT_KEYBOARD)
     down.ki = _KEYBDINPUT(vk, 0, 0, 0, None)
     up = _INPUT(type=_INPUT_KEYBOARD)
@@ -97,6 +102,8 @@ def open_app(name: str) -> str:
     name = (name or "").strip()
     if not name:
         return "I didn't catch what to open."
+    if not hasattr(os, "startfile"):
+        return "Opening apps by name only works on Windows."
     for target in (name, f"{name}.exe", f"{name}:"):
         try:
             _startfile(target)

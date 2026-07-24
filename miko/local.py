@@ -42,12 +42,52 @@ SAMPLE_RATE = 16000          # what whisper wants
 CHUNK_MS = 30
 
 # Endpointing
-CALIBRATE_S = 0.35           # sample the room before listening for speech
+CALIBRATE_S = 0.5            # sample the room before listening for speech
 NOISE_MULT = 3.0             # speech must exceed noise floor by this factor
 MIN_SPEECH_S = 0.35          # ignore clicks and door bumps
 SILENCE_HANG_S = 0.9         # silence this long after speech ends the turn
 MAX_UTTERANCE_S = 15.0       # hard cap so a stuck mic cannot hang the turn
 START_TIMEOUT_S = 6.0        # give up if nobody speaks
+MIN_GATE = 0.006             # never trust a "perfectly silent" room sample
+MAX_GATE = 0.05              # above this, ordinary speech stops clearing the bar
+NOISE_ALPHA = 0.3            # weight given to the newest room sample
+
+# Room-noise estimate, smoothed across every turn for the life of the process.
+# Deliberately module-level: a session ends at the close of each conversation,
+# but the room does not change between knocks, and the estimate is only stable
+# if it outlives the session that measured it.
+_room_noise = None
+
+
+def reset_room_noise():
+    """Forget the running room estimate. For tests and device changes."""
+    global _room_noise
+    _room_noise = None
+
+
+def next_gate(measured):
+    """Blend this turn's room sample into the running estimate, return a gate.
+
+    Recalibrating from scratch every single turn is what made endpointing
+    brittle. In a quiet solo room a 350ms sample is stable, so it looked fine;
+    in a live room it swings hard, and the gate swung with it. Too high and
+    speech never crossed it -- the turn was silently discarded and MIKO just
+    looked like it hadn't heard you, which is the failure mode that ate the
+    Build Week demo. Smoothing plus a ceiling means a loud room degrades the
+    gate instead of switching it off.
+    """
+    global _room_noise
+    measured = max(0.0, float(measured))
+    if _room_noise is None:
+        _room_noise = measured
+    else:
+        _room_noise = (1.0 - NOISE_ALPHA) * _room_noise + NOISE_ALPHA * measured
+
+    gate = max(_room_noise * NOISE_MULT, MIN_GATE)
+    if gate > MAX_GATE:
+        log_event("endpoint_gate_capped", wanted=round(gate, 5), gate=MAX_GATE)
+        gate = MAX_GATE
+    return gate
 
 OLLAMA_URL = os.environ.get("MIKO_OLLAMA_URL", "http://localhost:11434")
 TEXT_MODEL = os.environ.get("MIKO_TEXT_MODEL", "")
@@ -122,8 +162,9 @@ class Recorder:
                 data, _ = stream.read(block)
                 noise.append(float(np.sqrt(np.mean(data ** 2))))
             floor = float(np.median(noise)) if noise else 0.0
-            gate = max(floor * NOISE_MULT, 0.006)
-            log_event("endpoint_gate", noise_floor=round(floor, 5), gate=round(gate, 5))
+            gate = next_gate(floor)
+            log_event("endpoint_gate", noise_floor=round(floor, 5),
+                      smoothed=round(_room_noise, 5), gate=round(gate, 5))
 
             # 2. wait for speech, then capture until it stops
             started = None

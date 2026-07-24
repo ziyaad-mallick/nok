@@ -88,7 +88,13 @@ class DetectorConfig:
     @classmethod
     def from_calibration(cls, data: dict) -> "DetectorConfig":
         d = cls()
-        th = data.get("thresholds", {})
+        if not isinstance(data, dict):
+            return d
+        th = data.get("thresholds")
+        # A half-written calibration.json parses fine but can hold a null or a
+        # list here; falling back to defaults beats crashing before startup.
+        if not isinstance(th, dict):
+            th = {}
         return cls(
             samplerate=int(data.get("samplerate", d.samplerate)),
             attack_ratio=float(th.get("attack_ratio", d.attack_ratio)),

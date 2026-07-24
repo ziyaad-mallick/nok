@@ -1,3 +1,45 @@
+[project]
+name = "miko"
+version = "2.0.0"
+description = "Knock on your laptop and a desktop agent wakes up, looks at your screen, and talks to you about it."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Ziyaad Mallick" }]
+keywords = ["voice-agent", "desktop-agent", "knock-detection", "realtime-api"]
+classifiers = [
+    "Environment :: Win32 (MS Windows)",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Multimedia :: Sound/Audio :: Capture/Recording",
+]
+dependencies = [
+    "numpy>=2.0",
+    "sounddevice>=0.5",
+    "soxr>=1.0",
+    "faster-whisper>=1.2",
+    "pyttsx3>=2.99",
+    "mss>=10.0",
+    "Pillow>=11.0",
+    "pynput>=1.8",
+    "openai>=2.46.0",
+    "websockets>=13,<16",
+    "requests>=2.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0", "pytest-asyncio>=1.0"]
+
+[project.scripts]
+miko = "miko.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["miko"]
+
 [tool.pytest.ini_options]
 # Put the repo root on sys.path so `pytest` (bare console script) imports the
 # `miko` package the same way `python -m pytest` does. Without this, a fresh

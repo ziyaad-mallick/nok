@@ -255,7 +255,13 @@ def build(args):
     cal_path = _REPO_ROOT / "calibration.json"
     cal = _load_calibration(cal_path)
 
-    det_cfg = (DetectorConfig.from_calibration(cal) if cal else DetectorConfig())
+    try:
+        det_cfg = DetectorConfig.from_calibration(cal) if cal else DetectorConfig()
+    except (TypeError, ValueError) as exc:
+        # Valid JSON holding nonsense values. Defaults still detect knocks;
+        # refusing to start does not.
+        log_event("calibration_invalid", error=str(exc))
+        det_cfg = DetectorConfig()
     if args.thump:
         det_cfg.simple_mode = True
         det_cfg.simple_amplitude = float(
@@ -316,6 +322,28 @@ def _load_calibration(path):
         return {}
 
 
+def _watch_threads(miko, stop_event, threads, poll_s=2.0):
+    """Say something out loud when a background worker dies on its own.
+
+    Every worker is a daemon, so one of them dying takes nothing else down --
+    the overlay keeps painting and the process looks healthy while being partly
+    or wholly unresponsive. Noticing is the entire job here.
+    """
+    def loop():
+        alive = dict.fromkeys(threads, True)
+        while not stop_event.wait(poll_s):
+            for name, thread in threads.items():
+                if alive[name] and not thread.is_alive():
+                    alive[name] = False
+                    log_event("thread_died", thread=name)
+                    print(f"\n  MIKO's {name} stopped unexpectedly. "
+                          f"Knocks will no longer work; restart MIKO.\n",
+                          file=sys.stderr)
+                    miko.set_state(ERROR, f"{name} stopped")
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def _resolve_device(cal):
     try:
         return int(cal["device_index"])
@@ -331,11 +359,11 @@ def main(argv=None):
     p.add_argument("--device", type=int, default=None, help="input device index")
     p.add_argument("--no-sides", action="store_true", help="ignore side detection")
     p.add_argument("--no-screen", action="store_true", help="don't send screenshots")
-    p.add_argument("--chat", action="store_true",
-                   help="conversational agent via Ollama instead of spoken commands")
-    # --local used to select the Ollama backend, before local spoken commands
-    # became the default. Accepted silently so an old command line still runs.
-    p.add_argument("--local", action="store_true", help=argparse.SUPPRESS)
+    # --local is the name the README has always used for this. It was briefly a
+    # silent no-op, which meant following the README exactly got you a different
+    # mode than the one it described; it is a real alias again.
+    p.add_argument("--chat", "--local", dest="chat", action="store_true",
+                   help="conversational agent via Ollama, reads your screen, no key")
     p.add_argument("--realtime", action="store_true",
                    help="OpenAI Realtime voice agent (needs OPENAI_API_KEY + quota)")
     p.add_argument("--speak", action="store_true",
@@ -381,11 +409,24 @@ def main(argv=None):
         close_out=float(os.environ.get("MIKO_CLOSE_OUT", "0.75")),
     )
 
+    def _capture_died(reason):
+        # SLEEPING renders as invisible, so without this a dead microphone is
+        # pixel-identical to a healthy idle app -- you knock, nothing happens,
+        # and nothing anywhere says why.
+        print(f"\n  MIKO has gone deaf: {reason}", file=sys.stderr)
+        print("  The microphone stream stopped and could not be reopened.",
+              file=sys.stderr)
+        print("  Reconnect the mic (or free it from another app) and restart.\n",
+              file=sys.stderr)
+        miko.set_state(ERROR, "microphone lost")
+
+    capture.on_error = _capture_died
     capture.start()
-    threading.Thread(
+    detector_thread = threading.Thread(
         target=detector.run, args=(ring, ioi, stop_event),
         kwargs={"on_wake": miko.on_wake}, daemon=True,
-    ).start()
+    )
+    detector_thread.start()
 
     print("MIKO is listening.\n")
     print(bindings.describe(side_cfg.enabled, agent_enabled=not args.no_agent))
@@ -398,6 +439,9 @@ def main(argv=None):
 
     loop_thread = threading.Thread(target=lambda: asyncio.run(miko.run()), daemon=True)
     loop_thread.start()
+
+    _watch_threads(miko, stop_event,
+                   {"detector": detector_thread, "agent loop": loop_thread})
 
     try:
         if overlay is not None:

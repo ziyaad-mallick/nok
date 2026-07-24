@@ -12,7 +12,12 @@ from miko import logs
 
 
 @pytest.fixture(autouse=True)
-def _reset_session_logging():
+def _reset_session_logging(tmp_path, monkeypatch):
     logs.shutdown()
+    # Redirect the DEFAULT log directory into this test's tmp dir. Any test
+    # touching a module that logs triggers a lazy init on the first
+    # log_event(), which otherwise wrote a real session file -- full of fixture
+    # data -- into the repo's session-logs/ on every single run.
+    monkeypatch.setattr(logs, "_REPO_ROOT", tmp_path)
     yield
     logs.shutdown()
