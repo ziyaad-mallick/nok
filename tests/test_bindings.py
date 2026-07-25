@@ -1,15 +1,16 @@
 import pytest
 
-from miko import bindings
-from miko.bindings import (
+from nok import bindings
+from nok.bindings import (
     IGNORE,
     MEDIA_PLAY_PAUSE,
+    OPEN_FAV_APP,
     SCREENSHOT,
     WAKE_AGENT,
     resolve,
 )
-from miko.ioi import DOUBLE_TAP, NONE, TRIPLE_TAP
-from miko.side import LEFT, RIGHT, UNKNOWN
+from nok.ioi import DOUBLE_TAP, NONE, TRIPLE_TAP
+from nok.side import LEFT, RIGHT, UNKNOWN
 
 
 # -- the spec, with sides working -----------------------------------------
@@ -83,3 +84,48 @@ def test_describe_warns_when_sides_are_off():
     text = bindings.describe(False)
     assert "side detection off" in text
     assert "play / pause" not in text
+
+
+# -- --fav, the favourite-app binding -------------------------------------
+
+def test_fav_app_takes_the_left_double_knock():
+    assert resolve(DOUBLE_TAP, LEFT, fav_app="spotify").intent == OPEN_FAV_APP
+
+
+def test_fav_app_never_takes_the_right_double_knock():
+    """Screenshot is the headline gesture; --fav must not silently eat it."""
+    assert resolve(DOUBLE_TAP, RIGHT, fav_app="spotify").intent == SCREENSHOT
+
+
+def test_fav_app_wins_the_only_slot_when_sides_are_off():
+    got = resolve(DOUBLE_TAP, UNKNOWN, sides_enabled=False, fav_app="spotify")
+    assert got.intent == OPEN_FAV_APP
+
+
+def test_without_fav_app_the_map_is_unchanged():
+    assert resolve(DOUBLE_TAP, LEFT, fav_app="").intent == MEDIA_PLAY_PAUSE
+    assert resolve(DOUBLE_TAP, UNKNOWN, sides_enabled=False, fav_app="").intent == SCREENSHOT
+
+
+def test_fav_app_does_not_touch_the_triple_knock():
+    assert resolve(TRIPLE_TAP, LEFT, fav_app="spotify").intent == WAKE_AGENT
+
+
+def test_opening_an_app_is_an_instant_action():
+    assert resolve(DOUBLE_TAP, LEFT, fav_app="spotify").instant is True
+
+
+def test_describe_names_the_fav_app_instead_of_media():
+    text = bindings.describe(True, fav_app="spotify")
+    assert "open spotify" in text
+    assert "play / pause" not in text
+
+
+def test_describe_admits_fav_app_costs_the_screenshot_without_sides():
+    text = bindings.describe(False, fav_app="spotify")
+    assert "open spotify" in text
+    assert "screenshot is unavailable" in text
+
+
+def test_describe_labels_the_agent_it_actually_runs():
+    assert "read my screen" in bindings.describe(True, agent_label="read my screen")

@@ -97,9 +97,9 @@ def save_png(folder: Path = None) -> Path:
     """
     import mss.tools
 
-    folder = folder or (Path.home() / "Pictures" / "miko")
+    folder = folder or (Path.home() / "Pictures" / "nok")
     folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / f"miko-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
+    dest = folder / f"nok-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
     sct = _sct()
     shot = sct.grab(_primary(sct))
     mss.tools.to_png(shot.rgb, shot.size, output=str(dest))

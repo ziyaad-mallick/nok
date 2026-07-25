@@ -1,8 +1,8 @@
-# OpenAI Realtime API — Technical Reference for MIKO
+# OpenAI Realtime API — Technical Reference for NOK
 
 Researched 2026-07-21. Sources verified against `developers.openai.com/api/docs` (current GA docs — the old `platform.openai.com/docs/guides/realtime-api-beta` path is **dead**; the Realtime Beta was deprecated and removed 2026-05-12) and the `openai/openai-python` repo (`main` branch, package version 2.46.0, examples verified by pulling raw source).
 
-Goal: replace MIKO's broken Silero VAD → faster-whisper → `codex` subprocess chain (17-38s latency, frequent `no_speech` misfires) with a direct Realtime API connection that can also see the screen.
+Goal: replace NOK's broken Silero VAD → faster-whisper → `codex` subprocess chain (17-38s latency, frequent `no_speech` misfires) with a direct Realtime API connection that can also see the screen.
 
 ---
 
@@ -11,7 +11,7 @@ Goal: replace MIKO's broken Silero VAD → faster-whisper → `codex` subprocess
 - **Transport:** raw `websockets`, driven through the **official SDK's realtime helper** (`client.realtime.connect(...)`), not hand-rolled `websockets.connect`. It's first-class, small, and battle-tested — use it.
 - **Model:** `gpt-realtime` (GA, stable, image input supported). `gpt-realtime-2` / `gpt-realtime-2.1` exist and are newer/cheaper-ish per token but are moving targets released within the last ~10 weeks — **stick with plain `gpt-realtime`** for a 13-hour build unless you hit a specific problem it fixes. `gpt-realtime-mini` is a fallback if you get rate-limited or want cheaper demo runs.
 - **Audio:** 24 kHz, mono, PCM16, base64 over the wire. Mic capture at 16k/48k must be resampled to 24k (use `soxr`, already in `requirements.txt`).
-- **Turn detection:** Use **manual mode** (`turn_detection: null`) driven by the knock trigger — MIKO is push-to-talk-shaped (triple-knock opens the mic, silence or a second signal closes it), not open-mic. Server VAD config is documented below in case you want auto-detected end-of-utterance while the mic is open.
+- **Turn detection:** Use **manual mode** (`turn_detection: null`) driven by the knock trigger — NOK is push-to-talk-shaped (triple-knock opens the mic, silence or a second signal closes it), not open-mic. Server VAD config is documented below in case you want auto-detected end-of-utterance while the mic is open.
 - **Vision:** Realtime API **does** accept images directly in-session via `conversation.item.create` with an `input_image` content part (base64 data URL). No separate vision-completions hop needed. This was the single biggest open question and it resolved favorably — confirmed via `input_image` content-part support in `gpt-realtime` and `gpt-realtime-2`.
 - **Function calling:** standard `tools` array in `session.update`, arguments stream via `response.function_call_arguments.delta/.done` or arrive whole in `response.done`, results go back via `conversation.item.create` with `type: function_call_output`.
 - **Interruption:** `response.cancel` + (for WebSocket specifically) `conversation.item.truncate` to tell the server how much audio the user actually heard before cutting it off.
@@ -76,7 +76,7 @@ Authorization: Bearer <OPENAI_API_KEY>
 
 No `OpenAI-Beta: realtime=v1` header anymore — that was the beta-era requirement and the beta endpoint is gone (removed 2026-05-12). If any tutorial you find online shows that header, it's stale.
 
-There's also `/v1/realtime/client_secrets` for minting short-lived tokens for browser/mobile clients, and `/v1/realtime/calls` for WebRTC/SIP. **Not relevant here** — MIKO is a trusted desktop process holding the real API key, so a direct WebSocket with the full key is correct and simplest. Don't build ephemeral-token plumbing for a hackathon demo.
+There's also `/v1/realtime/client_secrets` for minting short-lived tokens for browser/mobile clients, and `/v1/realtime/calls` for WebRTC/SIP. **Not relevant here** — NOK is a trusted desktop process holding the real API key, so a direct WebSocket with the full key is correct and simplest. Don't build ephemeral-token plumbing for a hackathon demo.
 
 ### Model strings currently live (July 2026)
 
@@ -86,7 +86,7 @@ There's also `/v1/realtime/client_secrets` for minting short-lived tokens for br
 | `gpt-realtime-mini` | Cheaper/faster, less capable at instruction-following and tool use. Fallback if rate-limited. |
 | `gpt-realtime-1.5` | Newer generation (Feb 2026). |
 | `gpt-realtime-2` | Newer still (May 2026), image input supported. |
-| `gpt-realtime-2.1` / `gpt-realtime-2.1-mini` | Newest (July 2026), improved interruption handling and noise handling — tempting given MIKO's barge-in requirement, but released ~2 weeks ago; higher risk of doc/SDK mismatch under time pressure. |
+| `gpt-realtime-2.1` / `gpt-realtime-2.1-mini` | Newest (July 2026), improved interruption handling and noise handling — tempting given NOK's barge-in requirement, but released ~2 weeks ago; higher risk of doc/SDK mismatch under time pressure. |
 | `gpt-realtime-translate`, `gpt-realtime-whisper` | Not relevant (translation / STT-only). |
 
 Recommendation stands: `gpt-realtime` for the build, with `gpt-realtime-2.1` as a one-line swap to try if you have spare time and want better interruption behavior — it's config-compatible, same event shapes.
@@ -121,7 +121,7 @@ await connection.session.update(session={
 
 ### `sounddevice` float32 → PCM16 @ 24kHz
 
-MIKO's existing capture is presumably float32 (`sounddevice` default `dtype='float32'`) at 16000 or 48000 Hz. Two options:
+NOK's existing capture is presumably float32 (`sounddevice` default `dtype='float32'`) at 16000 or 48000 Hz. Two options:
 
 **A. Capture directly at 24000 Hz, int16** (simplest — matches the SDK examples exactly, do this unless the knock-detector needs a specific rate on the same stream):
 
@@ -241,7 +241,7 @@ Defaults: `threshold=0.5` (0-1, higher = needs louder speech, better for noisy r
 ```
 `eagerness`: `low` (lets user ramble, waits longer), `medium` (default-equivalent, `auto` maps here), `high` (cuts in fast). Good for natural conversation; adds a little model-side latency vs raw silence detection since it's judgment-based, not just amplitude-based.
 
-### Manual / push-to-talk (`turn_detection: null`) — **recommended for MIKO**
+### Manual / push-to-talk (`turn_detection: null`) — **recommended for NOK**
 
 ```python
 await connection.session.update(session={
@@ -259,7 +259,7 @@ await connection.input_audio_buffer.commit()
 await connection.response.create()
 ```
 
-**Why manual mode fits MIKO:** the knock is already the "start listening" signal — that's literally push-to-talk semantics, server VAD's job of *detecting speech onset* is redundant with the knock trigger. What you still need is an end-of-turn heuristic (e.g. your own lightweight silence timeout on the amplitude of the 20ms chunks you're already reading, or a fixed max window, or a second knock to end). You can implement a trivial energy-based silence timer client-side (a few lines, using `np.abs(data).mean()` on the int16 chunks) rather than depending on the server's VAD — this avoids the `no_speech` misfire class of bug entirely, because you're not asking Whisper to classify short/quiet clips anymore; you're just streaming continuously to a server that transcribes as it goes.
+**Why manual mode fits NOK:** the knock is already the "start listening" signal — that's literally push-to-talk semantics, server VAD's job of *detecting speech onset* is redundant with the knock trigger. What you still need is an end-of-turn heuristic (e.g. your own lightweight silence timeout on the amplitude of the 20ms chunks you're already reading, or a fixed max window, or a second knock to end). You can implement a trivial energy-based silence timer client-side (a few lines, using `np.abs(data).mean()` on the int16 chunks) rather than depending on the server's VAD — this avoids the `no_speech` misfire class of bug entirely, because you're not asking Whisper to classify short/quiet clips anymore; you're just streaming continuously to a server that transcribes as it goes.
 
 **Middle ground** if you want the server to still auto-detect end-of-speech once the knock opens the mic, but not have it eagerly interrupt: keep `server_vad` but set `interrupt_response: false` and drive `response.cancel` yourself only on an explicit second knock. This is a one-line config change from the fully manual version, worth having as a toggle.
 
@@ -379,7 +379,7 @@ Single event, send it right after connecting (and again anytime you want to chan
 await connection.session.update(session={
     "type": "realtime",
     "model": "gpt-realtime",
-    "instructions": "You are MIKO, a terse desktop voice assistant...",
+    "instructions": "You are NOK, a terse desktop voice assistant...",
     "audio": {
         "input": {
             "format": {"type": "audio/pcm", "rate": 24000},
@@ -397,7 +397,7 @@ await connection.session.update(session={
 
 ### Interruption / barge-in
 
-Two things need to happen when the user starts talking over MIKO:
+Two things need to happen when the user starts talking over NOK:
 
 1. **Stop generation server-side:** `await connection.send({"type": "response.cancel"})`
 2. **Tell the server how much of the last audio item the user actually heard**, so it doesn't think you heard the full response in conversation history (matters for WebSocket specifically — WebRTC/SIP handle this automatically):
@@ -412,7 +412,7 @@ Two things need to happen when the user starts talking over MIKO:
    The reference `AudioPlayerAsync` tracks `_frame_count` for exactly this reason — use it to compute `audio_end_ms = frame_count / sample_rate * 1000`.
 3. Also clear your own playback queue (`player.stop()`) so stale audio doesn't keep playing after cancel.
 
-If you're in `server_vad` mode with `interrupt_response: true`, the server does step 1 automatically on detecting new speech — you still want to clear the local playback queue yourself and should still send `conversation.item.truncate` for correctness. In manual mode, you own the whole sequence (bind it to whatever "shut up" gesture MIKO uses — a knock again, a keypress, whatever).
+If you're in `server_vad` mode with `interrupt_response: true`, the server does step 1 automatically on detecting new speech — you still want to clear the local playback queue yourself and should still send `conversation.item.truncate` for correctness. In manual mode, you own the whole sequence (bind it to whatever "shut up" gesture NOK uses — a knock again, a keypress, whatever).
 
 ### Pricing (per official pricing, `gpt-realtime`/`gpt-realtime-2.1` family, July 2026)
 
@@ -431,7 +431,7 @@ As of Feb 2025 OpenAI removed the simultaneous-session cap on the Realtime API e
 
 ---
 
-## 7. Event reference (only what MIKO needs)
+## 7. Event reference (only what NOK needs)
 
 ### Client events you send
 
@@ -470,7 +470,7 @@ As of Feb 2025 OpenAI removed the simultaneous-session cap on the Realtime API e
 
 ## 8. Failure modes on Windows — read this before 2am
 
-1. **`asyncio` + Windows event loop policy:** Since Python 3.8, `ProactorEventLoop` is the default on Windows. This is what `websockets` needs (it does NOT need the old `SelectorEventLoop` workaround some very old blog posts recommend for SSL — that limitation was from early asyncio SSL-over-Proactor days and current `websockets`/CPython handles SSL fine over Proactor by default). **Do not** manually set `WindowsSelectorEventLoopPolicy()` — some old tutorials do this reflexively and it will silently break `asyncio.create_subprocess_exec` and other Proactor-only features if MIKO still shells out to anything (e.g. launching apps as a function-call tool). Leave the default loop alone unless you hit a concrete SSL error, and if you do, fix it narrowly rather than switching the whole app's loop policy.
+1. **`asyncio` + Windows event loop policy:** Since Python 3.8, `ProactorEventLoop` is the default on Windows. This is what `websockets` needs (it does NOT need the old `SelectorEventLoop` workaround some very old blog posts recommend for SSL — that limitation was from early asyncio SSL-over-Proactor days and current `websockets`/CPython handles SSL fine over Proactor by default). **Do not** manually set `WindowsSelectorEventLoopPolicy()` — some old tutorials do this reflexively and it will silently break `asyncio.create_subprocess_exec` and other Proactor-only features if NOK still shells out to anything (e.g. launching apps as a function-call tool). Leave the default loop alone unless you hit a concrete SSL error, and if you do, fix it narrowly rather than switching the whole app's loop policy.
 2. **`KeyboardInterrupt` inside `stream.read()` loops:** `sounddevice`'s blocking `.read()` on Windows doesn't always propagate Ctrl+C cleanly inside a tight `while True` polling loop — wrap your mic-capture loop in a real cancellation mechanism (an `asyncio.Event` you set from your knock/hotkey handler) rather than relying on `KeyboardInterrupt`/`try/finally` alone, especially since this will run as a background listener, not a foreground CLI script.
 3. **`sounddevice` device default sample rate mismatches:** not every Windows mic/interface supports 24000 Hz natively in exclusive mode; WASAPI shared mode (the `sounddevice` default) will resample host-side for you, but verify by actually opening `sd.InputStream(samplerate=24000, dtype="int16")` and catching `sd.PortAudioError` — fall back to capturing at the device's native rate (query via `sd.query_devices()`) and resample yourself with `soxr` if 24000 direct-open fails on the target machine. Test this on the actual demo laptop, not just your dev machine — device support varies.
 4. **Two audio streams (knock-detector + realtime mic) fighting over the same device:** opening two independent `InputStream`s on the same physical device works under WASAPI shared mode but adds a small amount of extra latency/jitter to both; cleanest is to **stop the knock-listener stream the instant a knock-triggered session starts**, then reopen it when the realtime session ends, rather than running both concurrently.
@@ -483,11 +483,11 @@ As of Feb 2025 OpenAI removed the simultaneous-session cap on the Realtime API e
 
 ## 9. Minimal working client
 
-Complete, runnable single file. Connects, streams mic audio in manual (push-to-talk) mode, plays responses back, supports interruption via a keypress, and does one screenshot-attached turn on trigger. Wire the "trigger" (currently an Enter-keypress stand-in) to MIKO's actual triple-knock detector.
+Complete, runnable single file. Connects, streams mic audio in manual (push-to-talk) mode, plays responses back, supports interruption via a keypress, and does one screenshot-attached turn on trigger. Wire the "trigger" (currently an Enter-keypress stand-in) to NOK's actual triple-knock detector.
 
 ```python
 """
-minimal_realtime_client.py — MIKO Realtime API reference client.
+minimal_realtime_client.py — NOK Realtime API reference client.
 
 Connects to OpenAI's Realtime API, push-to-talk style:
   - Press ENTER to start talking (stands in for triple-knock trigger)
@@ -584,7 +584,7 @@ def grab_screenshot_data_url(max_edge: int = 1280) -> str:
     return f"data:image/jpeg;base64,{b64}"
 
 
-class MikoRealtimeClient:
+class NokRealtimeClient:
     def __init__(self):
         self.client = AsyncOpenAI()
         self.player = AudioPlayer()
@@ -601,7 +601,7 @@ class MikoRealtimeClient:
                 "type": "realtime",
                 "model": MODEL,
                 "instructions": (
-                    "You are MIKO, a terse desktop voice assistant. "
+                    "You are NOK, a terse desktop voice assistant. "
                     "Answer concisely. If a screenshot is attached, ground your answer in it."
                 ),
                 "audio": {
@@ -721,7 +721,7 @@ class MikoRealtimeClient:
 
 
 if __name__ == "__main__":
-    asyncio.run(MikoRealtimeClient().run())
+    asyncio.run(NokRealtimeClient().run())
 ```
 
 ---

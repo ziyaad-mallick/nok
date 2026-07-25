@@ -1,7 +1,7 @@
 import json
 import threading
 
-from miko import logs
+from nok import logs
 
 
 def test_concurrent_log_events_all_valid_json(tmp_path):

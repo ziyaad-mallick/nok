@@ -1,4 +1,4 @@
-# MIKO v2 — Engineering Review
+# NOK v2 — Engineering Review
 
 **Date:** 2026-07-21 · **Reviewer:** eng-review · **Deadline:** 23:59 PKT today
 **Baseline:** 197 tests green, 23 modules, ~4113 LOC
@@ -18,7 +18,7 @@ deleted and replaced by one WebSocket. That is ~1,700 LOC removed against maybe
 ~600 added. **v2 is smaller than v1.** That is the only reason 13 hours is a real
 number and not a fantasy.
 
-The owner's framing — "miko was us starting from 0, this is us starting from 1" —
+The owner's framing — "nok was us starting from 0, this is us starting from 1" —
 is correct, but the asset isn't the code volume. It's the detector and the 197
 tests that prove it works. Do not touch them.
 
@@ -60,7 +60,7 @@ measured bug or shipped zero user value. Nothing here is a judgment call.
 run loop.** `App._pipeline` then runs the entire listen → transcribe → think → act
 cycle *synchronously on that thread*.
 
-Consequence: **while MIKO is working, MIKO is deaf.** The detector loop is blocked
+Consequence: **while NOK is working, NOK is deaf.** The detector loop is blocked
 and cannot classify a single block.
 
 The evidence this was known and papered over is in the code itself —

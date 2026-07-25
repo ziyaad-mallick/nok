@@ -26,9 +26,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from miko.detector import DetectorConfig, KnockDetector  # noqa: E402
-from miko.ioi import DOUBLE_TAP, TRIPLE_TAP, IOIStateMachine  # noqa: E402
-from miko.ring_buffer import SAMPLE_RATE  # noqa: E402
+from nok.detector import DetectorConfig, KnockDetector  # noqa: E402
+from nok.ioi import DOUBLE_TAP, TRIPLE_TAP, IOIStateMachine  # noqa: E402
+from nok.ring_buffer import SAMPLE_RATE  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = REPO_ROOT / "fixtures"
@@ -237,7 +237,7 @@ def main():
 
     res = run_kill_criterion(taps, typing, bumps, sr_t)
 
-    print("=== Miko detector replay harness ===")
+    print("=== Nok detector replay harness ===")
     print(f"sources: taps={src_t} typing={src_y} bumps={src_b}")
     print(f"double-taps detected : {res.double_taps}/{N_PAIRS}"
           f"  (need >= {KILL_MIN_DETECTED})")

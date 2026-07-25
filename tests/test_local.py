@@ -6,8 +6,8 @@ by hand; everything here is pure logic that can silently rot.
 import numpy as np
 import pytest
 
-from miko import local
-from miko.local import LocalSession, pick_model, strip_thinking
+from nok import local
+from nok.local import LocalSession, pick_model, strip_thinking
 
 
 # -- strip_thinking -------------------------------------------------------
@@ -130,8 +130,8 @@ def test_explicit_text_model_override_wins(monkeypatch):
 # -- session shape --------------------------------------------------------
 
 def test_exposes_the_same_interface_as_the_realtime_session():
-    """app.Miko must not be able to tell the two backends apart."""
-    from miko.realtime import RealtimeSession
+    """app.Nok must not be able to tell the two backends apart."""
+    from nok.realtime import RealtimeSession
     for name in ("run", "levels", "request_stop", "interrupt"):
         assert hasattr(LocalSession(), name), f"LocalSession is missing {name}"
         assert hasattr(RealtimeSession(api_key="x"), name)
@@ -181,7 +181,7 @@ def test_endpoint_constants_are_sane():
 
 # -- the speech gate ------------------------------------------------------
 #
-# This is the maths that decides whether MIKO ever hears you. It used to be
+# This is the maths that decides whether NOK ever hears you. It used to be
 # recalculated from scratch every turn from one short room sample, which is
 # stable in a quiet room and wild in a live one -- the failure that ate the
 # Build Week demo. These tests pin the behaviour that replaced it.

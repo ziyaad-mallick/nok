@@ -1,6 +1,6 @@
 """Triple-knock -> say a command -> it happens.
 
-Same three-method interface as RealtimeSession and LocalSession, so app.Miko
+Same three-method interface as RealtimeSession and LocalSession, so app.Nok
 cannot tell the backends apart.
 
     knock knock knock

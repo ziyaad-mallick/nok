@@ -48,7 +48,7 @@ MODEL = "gpt-realtime"
 VOICE = "marin"
 
 INSTRUCTIONS = (
-    "You are MIKO, a desktop voice assistant summoned by knocking on the laptop. "
+    "You are NOK, a desktop voice assistant summoned by knocking on the laptop. "
     "You can see the user's screen when a screenshot is attached. "
     "Be terse and conversational -- you are being spoken to, not read. "
     "Answer in one or two sentences unless asked to go deeper. "

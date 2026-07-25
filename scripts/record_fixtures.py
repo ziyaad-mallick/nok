@@ -3,7 +3,7 @@
     python -m scripts.record_fixtures
 
 Reads the pinned input device from calibration.json (run `python -m
-miko.calibrate` first) and records three 16kHz mono WAVs into fixtures/:
+nok.calibrate` first) and records three 16kHz mono WAVs into fixtures/:
 
     taps.wav    20 deliberate double-taps
     typing.wav  2 minutes of typing
@@ -19,7 +19,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from miko.ring_buffer import SAMPLE_RATE  # noqa: E402
+from nok.ring_buffer import SAMPLE_RATE  # noqa: E402
 from scripts.replay_harness import write_wav  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +39,7 @@ FIXTURES = [
 
 def _pinned_device():
     if not CALIBRATION_PATH.exists():
-        print(f"No {CALIBRATION_PATH.name}. Run `python -m miko.calibrate` first.")
+        print(f"No {CALIBRATION_PATH.name}. Run `python -m nok.calibrate` first.")
         sys.exit(1)
     with open(CALIBRATION_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)

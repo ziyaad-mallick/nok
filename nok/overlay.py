@@ -1,4 +1,4 @@
-"""Miko on-screen overlay — the "Ember pill" HUD.
+"""Nok on-screen overlay — the "Ember pill" HUD.
 
 Three layers, one file, one design surface:
 
@@ -12,8 +12,8 @@ Three layers, one file, one design surface:
     thread-safe, non-blocking ``set_state`` which only enqueues. The main
     thread runs a single ~30fps ``root.after`` loop that drains the queue,
     advances the model, and repaints. tkinter and ctypes are imported lazily
-    inside the window class only, so ``from miko.overlay import OverlayModel``
-    works headless (CI, unit tests, ``python -m miko`` on a box with no display).
+    inside the window class only, so ``from nok.overlay import OverlayModel``
+    works headless (CI, unit tests, ``python -m nok`` on a box with no display).
 
 The overlay is a passive subscriber: it receives ``(state, detail)`` tuples via
 ``App.observer`` and never calls back into the app.
@@ -353,7 +353,7 @@ class OverlayModel:
             dots = _dots(elapsed)
             line2 = _wake_line(detail)
         elif mode == "SPEAKING":
-            title = "Miko"
+            title = "Nok"
             line2 = self.transcript or detail
             style = "transcript" if self.transcript else "plain"
         elif mode == "THINKING":
@@ -378,7 +378,7 @@ class OverlayModel:
         elif mode == "DONE":
             title = "Done"
         else:  # NEUTRAL / unknown
-            title = "Miko"
+            title = "Nok"
             line2 = detail
         return title, dots, line2, style, timer
 
@@ -473,7 +473,7 @@ class OverlayModel:
 
     def _alpha(self, mode, elapsed):
         if mode == "SLEEPING":
-            # At rest MIKO is INVISIBLE, not dimmed. A persistent pill reading
+            # At rest NOK is INVISIBLE, not dimmed. A persistent pill reading
             # "knock twice" is the clutter that made v1 read as a HUD toy; the
             # product should have no screen presence until it is summoned.
             # A 300ms fade out keeps the exit from being a hard cut.
@@ -488,7 +488,7 @@ class Overlay:
     """Bottom-center, always-on-top, click-through Ember-pill HUD.
 
     If Tk() cannot be created (no display), the overlay degrades to a no-op
-    that still drains the queue, so ``python -m miko`` keeps running headless.
+    that still drains the queue, so ``python -m nok`` keeps running headless.
     """
 
     def __init__(self, model=None):
@@ -722,7 +722,7 @@ class Overlay:
     # -- the single 30fps loop --------------------------------------------
 
     def _tick(self):
-        """One frame. Cheap at rest: MIKO idles ~99.9% of the time, so an
+        """One frame. Cheap at rest: NOK idles ~99.9% of the time, so an
         unconditional 30fps Canvas repaint would burn a timer and a redraw pass
         forever for a window that is invisible. Repaint only when the view
         actually changed or something is still animating, and back the poll off

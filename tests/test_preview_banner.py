@@ -33,7 +33,7 @@ def test_banner_disclaims_each_faculty_it_lacks(source, claim):
 
 def test_banner_names_the_real_command(source):
     banner = re.search(r'BANNER\s*=\s*"""(.*?)"""', source, re.S).group(1)
-    assert "-m miko" in banner, "banner must point at the real entry point"
+    assert "-m nok" in banner, "banner must point at the real entry point"
 
 
 def test_banner_is_actually_printed(source):

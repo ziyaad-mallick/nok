@@ -4,7 +4,7 @@ All headless — `now` is injected, tkinter is never imported.
 """
 import pytest
 
-from miko.overlay import (
+from nok.overlay import (
     RING_MIN_GAP,
     RING_ONSET,
     WOKE_HOLD,

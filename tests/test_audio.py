@@ -7,8 +7,8 @@ at the module seam, so it needs no microphone and no audio backend.
 import numpy as np
 import pytest
 
-from miko import audio
-from miko.ring_buffer import RingBuffer
+from nok import audio
+from nok.ring_buffer import RingBuffer
 
 
 class FakeStream:

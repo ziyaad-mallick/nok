@@ -5,7 +5,7 @@ never imported here — importing ``OverlayModel`` must stay cheap and headless.
 """
 import pytest
 
-from miko.overlay import OverlayModel
+from nok.overlay import OverlayModel
 
 T0 = 100.0  # arbitrary monotonic origin
 
@@ -19,9 +19,9 @@ def _model_in(state, detail="", now=T0):
 # -- the seven modes: accent / title / expanded ----------------------------
 
 def test_sleeping_mode_is_invisible():
-    """At rest MIKO has no screen presence at all — no pill, no label.
+    """At rest NOK has no screen presence at all — no pill, no label.
 
-    v1 kept a persistent "MIKO / knock twice" pill on screen permanently. That
+    v1 kept a persistent "NOK / knock twice" pill on screen permanently. That
     is the clutter that made the HUD read as a toy; the product should not be
     visible until it is summoned.
     """

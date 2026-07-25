@@ -3,7 +3,7 @@
 Onsets are fed as plain float timestamps (seconds); `poll` is called with a
 time far past the last onset to force close-out and collect the decision.
 """
-from miko.ioi import (
+from nok.ioi import (
     CLOSE_OUT,
     DOUBLE_TAP,
     MAX_IOI,

@@ -1,4 +1,4 @@
-"""`python -m miko` entry point -> miko.app.main()."""
+"""`python -m nok` entry point -> nok.app.main()."""
 import sys
 
 from .app import main

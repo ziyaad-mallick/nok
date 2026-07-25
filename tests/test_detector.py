@@ -5,9 +5,9 @@ shared with the harness itself).
 """
 import numpy as np
 
-from miko.detector import BLOCKSIZE, DetectorConfig, KnockDetector
-from miko.ioi import DOUBLE_TAP, TRIPLE_TAP, IOIStateMachine
-from miko.ring_buffer import SAMPLE_RATE
+from nok.detector import BLOCKSIZE, DetectorConfig, KnockDetector
+from nok.ioi import DOUBLE_TAP, TRIPLE_TAP, IOIStateMachine
+from nok.ring_buffer import SAMPLE_RATE
 from scripts.replay_harness import (
     synth_knock,
     synth_silence,
@@ -185,7 +185,7 @@ def test_simple_mode_wakes_on_high_centroid_spike():
 # -- compute budget --------------------------------------------------------
 
 def test_consumed_drains_backlog_after_a_wake():
-    from miko.detector import _consumed_after_chunk
+    from nok.detector import _consumed_after_chunk
     sr = 16000
     # normal fast chunk: buffer barely moved -> advance to where we started
     assert _consumed_after_chunk(1000, 1000, sr) == 1000

@@ -43,7 +43,7 @@ from .logs import log_event
 from .ring_buffer import SAMPLE_RATE
 from .side import UNKNOWN
 
-BLOCKSIZE = 512  # mirrors miko.audio.BLOCKSIZE (not imported to stay sounddevice-free)
+BLOCKSIZE = 512  # mirrors nok.audio.BLOCKSIZE (not imported to stay sounddevice-free)
 
 
 def spectral_centroid(block, sr, freqs=None, window=None):
@@ -81,7 +81,7 @@ class DetectorConfig:
     # SIMPLE thump mode (OV-1): any single loud spike wakes, classifier bypassed.
     # Must sit BELOW a typical calibrated amplitude_floor so --thump is a genuine
     # last-resort fallback (looser), not stricter than normal mode. Override with
-    # MIKO_THUMP_AMPLITUDE when the mic runs quiet.
+    # NOK_THUMP_AMPLITUDE when the mic runs quiet.
     simple_mode: bool = False
     simple_amplitude: float = 0.08
 
@@ -274,7 +274,7 @@ class KnockDetector:
             except Exception as exc:
                 # The detector thread must survive anything (a subsystem raising
                 # up through on_wake, a transient buffer error) -- if it dies,
-                # Miko goes silently deaf. Log and keep looping.
+                # Nok goes silently deaf. Log and keep looping.
                 log_event("detector_loop_error", error=str(exc))
                 time.sleep(idle_sleep)
 

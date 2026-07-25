@@ -40,7 +40,7 @@ ACCENTS = {
     "WOKE": "#F4EEE4",       # near-white spark — deliberately not a hue: "heard you"
     "LISTENING": "#3FD1C0",  # bright teal — ears open
     "THINKING": "#9B80E8",   # amethyst — turning it over
-    "SPEAKING": "#E8A83D",   # warm gold — Miko has the floor
+    "SPEAKING": "#E8A83D",   # warm gold — Nok has the floor
     "ACTING": "#5BC98A",     # jade — doing it
     "TEACHING": "#E8A83D",   # retired with teach mode; kept so old events render
     "ERROR": "#E1604A",      # glowing coal-red — something's wrong

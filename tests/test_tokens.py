@@ -7,8 +7,8 @@ machine.
 """
 import pytest
 
-from miko import tokens
-from miko.tokens import Layout
+from nok import tokens
+from nok.tokens import Layout
 
 
 def test_default_layout_is_unscaled():

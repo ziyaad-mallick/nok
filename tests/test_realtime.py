@@ -10,7 +10,7 @@ import base64
 import numpy as np
 import pytest
 
-from miko.realtime import SAMPLE_RATE, AudioPlayer, RealtimeSession
+from nok.realtime import SAMPLE_RATE, AudioPlayer, RealtimeSession
 
 
 # -- fakes ----------------------------------------------------------------
@@ -201,7 +201,7 @@ async def test_states_follow_the_conversation():
     assert seen == ["LISTENING", "THINKING", "SPEAKING", "LISTENING"]
 
 
-async def test_user_speech_flushes_playback_so_miko_stops_talking():
+async def test_user_speech_flushes_playback_so_nok_stops_talking():
     s = _session()
     conn = FakeConn()
     await s._handle(conn, FakeEvent("input_audio_buffer.speech_started"))
@@ -281,7 +281,7 @@ async def test_media_tool_taps_the_key_and_reports_back():
     s = _session()
     conn = FakeConn()
     tapped = []
-    import miko.actions as actions
+    import nok.actions as actions
     orig = actions._tap_vk
     actions._tap_vk = lambda vk: tapped.append(vk)
     try:

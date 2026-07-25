@@ -15,7 +15,7 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-_logger = logging.getLogger("miko.session")
+_logger = logging.getLogger("nok.session")
 _logger.setLevel(logging.INFO)
 _logger.propagate = False
 
@@ -53,7 +53,7 @@ def init_session_logging(log_dir=None) -> str:
     """Idempotent: sets up the queue + listener + file on first call.
 
     Defaults to <repo>/session-logs (not cwd) so logs land in one place no
-    matter where `python -m miko` is launched from.
+    matter where `python -m nok` is launched from.
     """
     global _listener, _queue, _log_path
     with _init_lock:

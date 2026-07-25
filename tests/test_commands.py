@@ -7,8 +7,8 @@ mangles short commands.
 """
 import pytest
 
-from miko import commands
-from miko.commands import (
+from nok import commands
+from nok.commands import (
     MEDIA,
     OPEN_APP,
     SCREENSHOT,
@@ -38,7 +38,7 @@ def args(text):
     "fire up spotify",
     "uh, open spotify for me",
     "Open the Spotify app.",
-    "hey miko open spotify",
+    "hey nok open spotify",
     "just open spotify please",
 ])
 def test_every_way_a_person_says_open_spotify(said):

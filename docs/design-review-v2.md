@@ -1,7 +1,7 @@
-# MIKO Overlay — Design Review v2
+# NOK Overlay — Design Review v2
 
 **Reviewer:** design pass, autonomous, 2026-07-21 (Build Week deadline day)
-**Subject:** replace the "Ember pill" tkinter overlay (`miko/overlay.py`, 771 lines) with a visual
+**Subject:** replace the "Ember pill" tkinter overlay (`nok/overlay.py`, 771 lines) with a visual
 language for the new gesture spec — double-knock (screenshot), double-knock other side
 (play/pause), triple-knock (live GPT Realtime voice agent with screen vision).
 **Owner verdict on v1:** "the ui is shit." This review does not throw v1 away — the *engine*
@@ -74,7 +74,7 @@ Keep every dark fill at least a few RGB steps off the key color as a standing ru
 | Nested-oval fake gradient halo (`halo3`/`halo2`/`glow`/`orb`) | **KEEP the technique** | It's the correct workaround for no real blur on Canvas. Reuse for every state's core. |
 | Sonar rings (`_rings`) | **KEEP shape, REPLACE the driver** | Currently a fixed 0.9s metronome, not audio-reactive. This is the single biggest "feels alive vs feels fake" gap — wire it to real RMS (§5). |
 | Ember warm palette (charcoal panel, warm off-white text, one hue per state) | **KEEP the system, remap the states** | The palette *reasoning* (one un-repeated hue per state, muted rather than saturated) is good UI thinking; it is not what made the owner call v1 "shit." Keep it, just add SPEAKING and drop TEACHING/DONE-as-designed (§6). |
-| Persistent SLEEPING pill ("MIKO / knock twice") always visible | **CUT** | The new spec says IDLE is invisible. A pill sitting on screen 99.9% of the time reading "knock twice" is exactly the kind of "why is this here" clutter that reads as amateur HUD design. Removing it is also what makes "no busy render loop when idle" trivial (§9). |
+| Persistent SLEEPING pill ("NOK / knock twice") always visible | **CUT** | The new spec says IDLE is invisible. A pill sitting on screen 99.9% of the time reading "knock twice" is exactly the kind of "why is this here" clutter that reads as amateur HUD design. Removing it is also what makes "no busy render loop when idle" trivial (§9). |
 | `_THINK_VERBS` cycling copy, `thinking · 0:07` timer | **KEEP** | Genuinely good idea — turns 17–38s of real latency into a legible, honest wait instead of a frozen spinner. Still applies to THINKING under the new spec. |
 | ERROR shake + sticky hold | **KEEP** | Sells "something is actually wrong" without a modal. |
 | DONE checkmark, TEACHING candle-flicker | **CUT the states, KEEP the technique for reuse** | Teach-mode is not in the new gesture spec's core loop; the checkmark stroke-draw technique is worth keeping for a generic "confirmed" beat if one is ever needed. |
@@ -93,7 +93,7 @@ handle the instant actions: **FLASH_SHOT** and **FLASH_MEDIA** (§6).
 | **WOKE** | A single bright flash-ring bursts outward from screen-bottom-center and the pill snaps into existence mid-flash (scale 0.6→1.15→1.0, overshoot). No text yet, just "I heard you." | 150–250ms, then auto-advances | knock detected (any pattern that isn't an instant action) |
 | **LISTENING** | Compact pill, teal accent. Core orb + 1–2 sonar rings driven by **live mic RMS** (§5). Label: "Listening…". | Until VAD endpoints the utterance or GPT Realtime signals `input_audio_buffer.speech_stopped` | WOKE |
 | **THINKING** | Expands to the wider card. Rotating arc (kept from v1, it's good), amethyst accent, cycling verb ("Thinking…" / "Reading the screen…"), `thinking · 0:0N` timer once past 2s. | Until first response token/audio | LISTENING (network/tool-call gaps only — Realtime is mostly speech-to-speech, so this state should often be *brief or skipped entirely*, not a mandatory beat) |
-| **SPEAKING** | Same compact pill as LISTENING but **gold accent** and rings that **emanate outward** (vs. LISTENING's inward pulse) — the directionality is the whole signal for "who's talking." Driven by **live output-audio RMS** (§5). Label: "Miko" + a one-line live caption of what's being said if the Realtime transcript stream is available. | Until output audio stream ends | THINKING or directly from LISTENING |
+| **SPEAKING** | Same compact pill as LISTENING but **gold accent** and rings that **emanate outward** (vs. LISTENING's inward pulse) — the directionality is the whole signal for "who's talking." Driven by **live output-audio RMS** (§5). Label: "Nok" + a one-line live caption of what's being said if the Realtime transcript stream is available. | Until output audio stream ends | THINKING or directly from LISTENING |
 | **ACTING** | Brief flash + green chip: "→ screenshot" / "→ paste that in Notion" etc. Reuses v1's flash+chip exactly. | ~400ms–a few seconds for the real op | SPEAKING (tool call fires mid-turn) or THINKING |
 | **ERROR** | Reuse v1 exactly: red accent, 350ms damped shake, sticky through the following IDLE for 4s so a demo/screen-recording actually catches it. | 4s sticky, then fades | any state |
 | *(exit)* | Card holds its last frame ~600ms so the final word/result is readable, then fades+shrinks to IDLE over 300ms ease-in-cubic. | — | SPEAKING/ACTING → IDLE |
@@ -148,7 +148,7 @@ center point so the pill never "walks" across the screen.
 Two independent taps, same math, different accent + ring direction.
 
 **Signal — LISTENING (user's mic):**
-The app already has a live mono float32 ring buffer at 16kHz (`miko/ring_buffer.py`,
+The app already has a live mono float32 ring buffer at 16kHz (`nok/ring_buffer.py`,
 `SAMPLE_RATE = 16000`) feeding the VAD. Reuse it directly — do not open a second audio stream.
 Each render tick, read the last **50ms window** (800 samples):
 
@@ -266,8 +266,8 @@ it, and is the right trade for the toolkit chosen.
 
 ## 7. THE TWO INSTANT ACTIONS
 
-Both `screenshot` (`mss`, `miko/actions.py:_grab_screenshot`) and `media` play/pause
-(`SendInput` VK toggle, `miko/actions.py:media`) are already synchronous, single-call, sub-100ms
+Both `screenshot` (`mss`, `nok/actions.py:_grab_screenshot`) and `media` play/pause
+(`SendInput` VK toggle, `nok/actions.py:media`) are already synchronous, single-call, sub-100ms
 OS operations in the codebase today. The flourish must never sit in front of that call — it fires
 in parallel, after the action is already dispatched, purely as a "yes, that happened" confirmation.
 
@@ -493,7 +493,7 @@ that set looks unfinished.
   `Services/AudioCaptureService.cs` (`CalculateRms`) and `OverlayWindow.xaml.cs`
   (`UpdateWaveformBars`), a working implementation of exactly this problem.
 - **`porcupine`** (local reference) — wake-word engine, not a UI reference; reviewed and found not
-  applicable to the visual design (Miko's wake signal is a knock classifier, not a keyword
+  applicable to the visual design (Nok's wake signal is a knock classifier, not a keyword
   spotter, and porcupine ships no overlay/UI code to borrow).
 - **PyQt6 frameless/translucent overlay patterns** (`PyQt-Frameless-Window`, Qt Forum threads) —
   reviewed to make the §1 toolkit call honestly rather than assert it; confirms PyQt6 needs the

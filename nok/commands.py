@@ -13,7 +13,7 @@ handled below rather than hoped away:
   * homophones on short commands    "mute" -> "moot", "next" -> "necks"
   * number words                    "volume up two" -> repeat twice
 
-Anything unmatched returns UNKNOWN. Miko says so rather than guessing, and
+Anything unmatched returns UNKNOWN. Nok says so rather than guessing, and
 never types an unrecognised sentence into whatever window happens to be
 focused — that is how a stray phrase ends up executed in a terminal.
 """
@@ -29,7 +29,7 @@ UNKNOWN = "unknown"
 # does not leave a dangling "please".
 _FILLER = [
     "could you please", "can you please", "would you please",
-    "could you", "can you", "would you", "please", "hey miko", "miko",
+    "could you", "can you", "would you", "please", "hey nok", "nok",
     "i want you to", "i need you to", "go ahead and", "just",
     "um", "uh", "erm", "like",
 ]

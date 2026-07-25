@@ -183,7 +183,7 @@ class CaptureLoop:
         # this method when the reopen fails, and threading.Lock is not
         # reentrant -- doing the retry inline deadlocked the process on the
         # second consecutive failure, so a mic that simply would not open hung
-        # MIKO at startup forever with no output at all.
+        # NOK at startup forever with no output at all.
         if give_up:
             if self.on_error is not None:
                 # SLEEPING renders as invisible, so without this a dead stream

@@ -3,7 +3,7 @@ import threading
 import numpy as np
 import pytest
 
-from miko.ring_buffer import RingBuffer
+from nok.ring_buffer import RingBuffer
 
 
 def test_wraparound_correctness():

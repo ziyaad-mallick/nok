@@ -1,6 +1,6 @@
 """Per-laptop knock calibration wizard.
 
-    python -m miko.calibrate
+    python -m nok.calibrate
 
 Steps:
   1. list input devices, pick one, pin its index;
@@ -203,7 +203,7 @@ def _record(seconds, device, sr=SAMPLE_RATE):
 
 
 def main():
-    print("=== Miko knock calibration ===")
+    print("=== Nok knock calibration ===")
     device = _prompt_device()
     _confirm_enhancements()
 

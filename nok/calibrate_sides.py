@@ -69,7 +69,7 @@ def main(argv=None):
     device, channels = _pick_device()
     if device is None or channels < 2:
         print("No multi-channel input device found.")
-        print("Side detection is impossible on this machine — MIKO will use the")
+        print("Side detection is impossible on this machine — NOK will use the")
         print("side-agnostic gesture map (double = screenshot, triple = agent).")
         _write({"enabled": False, "reason": "no multi-channel device"})
         return 1

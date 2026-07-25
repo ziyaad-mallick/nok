@@ -64,7 +64,7 @@ _KEYEVENTF_KEYUP = 0x0002
 def _tap_vk(vk: int) -> None:
     """Press and release a virtual key."""
     if not hasattr(ctypes, "windll"):
-        # MIKO is a Windows product, but a curious stranger on a Mac deserves a
+        # NOK is a Windows product, but a curious stranger on a Mac deserves a
         # sentence rather than a bare AttributeError out of the audio thread.
         raise RuntimeError("Media keys use the Windows SendInput API; "
                            "this action layer only runs on Windows.")

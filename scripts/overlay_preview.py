@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from miko.overlay import Overlay  # noqa: E402
+from nok.overlay import Overlay  # noqa: E402
 
 # (state, detail, seconds, audio_source or None)
 SCRIPT = [
@@ -78,7 +78,7 @@ BANNER = """
 
   It exists only to check colour, motion, position and timing.
 
-  To run MIKO for real:      .venv\\Scripts\\python.exe -m miko
+  To run NOK for real:      .venv\\Scripts\\python.exe -m nok
 ==============================================================
 """
 

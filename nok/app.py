@@ -1,14 +1,18 @@
-"""MIKO v2 — knock-summoned desktop agent.
+"""NOK v2 — knock on your laptop, something happens.
 
     knock knock  (right)  -> screenshot            local, instant
     knock knock  (left)   -> media play/pause      local, instant
-    knock knock knock     -> live GPT voice agent  sees your screen
+                          -> or open --fav APP     local, instant
+    knock knock knock     -> an agent              optional; four backends
+
+By default there is no window: a tray icon, and a balloon per action (notify.py).
+The overlay is opt-in via --overlay.
 
 Architecture
 ------------
 
 v1 ran the entire wake pipeline synchronously inside the detector's own run
-loop, which meant MIKO was deaf for the whole time it was working -- knocks
+loop, which meant NOK was deaf for the whole time it was working -- knocks
 arriving mid-cycle were not merely ignored, they were never classified. v2
 splits the two:
 
@@ -21,7 +25,7 @@ conversation is heard and acted on -- that is what makes knock-to-interrupt
 possible at all.
 
 Self-hearing is prevented the way v1 solved it: the detector's playback gate is
-held while the agent is speaking, so MIKO cannot wake itself on its own voice.
+held while the agent is speaking, so NOK cannot wake itself on its own voice.
 """
 import argparse
 import asyncio
@@ -34,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import bindings
-from .bindings import MEDIA_PLAY_PAUSE, SCREENSHOT, WAKE_AGENT
+from .bindings import MEDIA_PLAY_PAUSE, OPEN_FAV_APP, SCREENSHOT, WAKE_AGENT
 from .ioi import IOIStateMachine
 from .logs import log_event
 from .side import UNKNOWN
@@ -61,17 +65,21 @@ class Gesture:
     t: float
 
 
-class Miko:
+class Nok:
     """Owns the gesture queue, the local actions, and the agent session."""
 
     def __init__(self, *, detector=None, sides_enabled=False, on_state=None,
-                 on_level=None, session_factory=None, actions=None):
+                 on_level=None, session_factory=None, actions=None,
+                 fav_app="", on_notify=None):
         self.detector = detector
         self.sides_enabled = sides_enabled
         self.on_state = on_state or (lambda s, d="": None)
         self.on_level = on_level or (lambda source, rms: None)
         self.session_factory = session_factory
         self.actions = actions
+        self.fav_app = fav_app
+        # Default UI: a notification per action, no window. See notify.py.
+        self.on_notify = on_notify or (lambda title, text="": None)
 
         self.gestures = queue.Queue()
         self.state = SLEEPING
@@ -133,13 +141,16 @@ class Miko:
             await self._close_session()
             return
 
-        binding = bindings.resolve(g.pattern, g.side, sides_enabled=self.sides_enabled)
+        binding = bindings.resolve(g.pattern, g.side, sides_enabled=self.sides_enabled,
+                                   fav_app=self.fav_app)
         log_event("gesture", pattern=str(g.pattern), side=g.side, intent=binding.intent)
 
         if binding.intent == SCREENSHOT:
             await self._instant(binding, self._screenshot)
         elif binding.intent == MEDIA_PLAY_PAUSE:
             await self._instant(binding, self._play_pause)
+        elif binding.intent == OPEN_FAV_APP:
+            await self._instant(binding, self._open_fav)
         elif binding.intent == WAKE_AGENT:
             await self._open_session()
 
@@ -159,8 +170,21 @@ class Miko:
         dt = time.perf_counter() - t0
         log_event("instant_action", intent=binding.intent, seconds=round(dt, 4),
                   result=result)
+        self._notify_action(binding.intent, result)
         await asyncio.sleep(0.35)  # let the confirmation flourish be seen
         self.set_state(SLEEPING)
+
+    def _notify_action(self, intent, result):
+        """Tell the user it happened. With no overlay this is the only feedback
+        a silent local action produces."""
+        from .notify import action_message
+        title, body = action_message(intent, str(result))
+        if not title:
+            return
+        try:
+            self.on_notify(title, body)
+        except Exception as exc:
+            log_event("notify_error", error=str(exc))
 
     def _screenshot(self):
         from . import screen
@@ -170,6 +194,10 @@ class Miko:
         from .actions import VK_MEDIA_PLAY_PAUSE, _tap_vk
         _tap_vk(VK_MEDIA_PLAY_PAUSE)
         return "play/pause"
+
+    def _open_fav(self):
+        from .actions import open_app
+        return open_app(self.fav_app)
 
     # -- the agent -------------------------------------------------------
 
@@ -246,7 +274,7 @@ class Miko:
 # ==========================================================================
 
 def build(args):
-    """Wire real hardware. Returns (miko, detector, capture, stop_event)."""
+    """Wire real hardware. Returns (nok, detector, capture, stop_event)."""
     from .audio import CaptureLoop
     from .detector import DetectorConfig, KnockDetector
     from .ring_buffer import RingBuffer
@@ -265,9 +293,9 @@ def build(args):
     if args.thump:
         det_cfg.simple_mode = True
         det_cfg.simple_amplitude = float(
-            os.environ.get("MIKO_THUMP_AMPLITUDE", det_cfg.simple_amplitude)
+            os.environ.get("NOK_THUMP_AMPLITUDE", det_cfg.simple_amplitude)
         )
-    floor = os.environ.get("MIKO_KNOCK_FLOOR")
+    floor = os.environ.get("NOK_KNOCK_FLOOR")
     if floor:
         det_cfg.amplitude_floor = float(floor)
 
@@ -287,10 +315,15 @@ def build(args):
         side_buffer=side_buffer,
     )
 
+    nok = None  # bound below; the factory closes over it for notifications
+
     def session_factory(on_state):
         # Default: spoken commands, matched locally and executed. No key, no
         # model server, no network -- and no LLM latency between saying a thing
         # and it happening.
+        if args.vision:
+            from .vision import VisionSession
+            return VisionSession(on_state=on_state, on_answer=nok.on_notify)
         if args.realtime:
             from .realtime import RealtimeSession
             return RealtimeSession(device=device, on_state=on_state,
@@ -303,12 +336,13 @@ def build(args):
         return VoiceCommandSession(device=device, on_state=on_state,
                                    speak=args.speak)
 
-    miko = Miko(
+    nok = Nok(
         detector=detector,
         sides_enabled=side_cfg.enabled,
         session_factory=None if args.no_agent else session_factory,
+        fav_app=getattr(args, "fav", "") or "",
     )
-    return miko, detector, capture, ring, side_cfg
+    return nok, detector, capture, ring, side_cfg
 
 
 def _load_calibration(path):
@@ -322,7 +356,7 @@ def _load_calibration(path):
         return {}
 
 
-def _watch_threads(miko, stop_event, threads, poll_s=2.0):
+def _watch_threads(nok, stop_event, threads, poll_s=2.0):
     """Say something out loud when a background worker dies on its own.
 
     Every worker is a daemon, so one of them dying takes nothing else down --
@@ -336,10 +370,10 @@ def _watch_threads(miko, stop_event, threads, poll_s=2.0):
                 if alive[name] and not thread.is_alive():
                     alive[name] = False
                     log_event("thread_died", thread=name)
-                    print(f"\n  MIKO's {name} stopped unexpectedly. "
-                          f"Knocks will no longer work; restart MIKO.\n",
+                    print(f"\n  NOK's {name} stopped unexpectedly. "
+                          f"Knocks will no longer work; restart NOK.\n",
                           file=sys.stderr)
-                    miko.set_state(ERROR, f"{name} stopped")
+                    nok.set_state(ERROR, f"{name} stopped")
 
     threading.Thread(target=loop, daemon=True).start()
 
@@ -352,7 +386,7 @@ def _resolve_device(cal):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="miko", description="Knock-summoned desktop agent")
+    p = argparse.ArgumentParser(prog="nok", description="Knock-summoned desktop agent")
     p.add_argument("--calibrate", action="store_true", help="run the knock calibration wizard")
     p.add_argument("--calibrate-sides", action="store_true", help="calibrate left/right knocks")
     p.add_argument("--thump", action="store_true", help="SIMPLE mode: any loud thump wakes")
@@ -366,10 +400,16 @@ def main(argv=None):
                    help="conversational agent via Ollama, reads your screen, no key")
     p.add_argument("--realtime", action="store_true",
                    help="OpenAI Realtime voice agent (needs OPENAI_API_KEY + quota)")
+    p.add_argument("--vision", action="store_true",
+                   help="triple-knock reads your screen and answers in a "
+                        "notification, no microphone (needs OPENAI_API_KEY)")
+    p.add_argument("--fav", metavar="APP", default="",
+                   help="bind the left double-knock to opening APP")
     p.add_argument("--speak", action="store_true",
                    help="speak a confirmation after each command")
     p.add_argument("--no-agent", action="store_true", help="instant actions only, no network")
-    p.add_argument("--no-overlay", action="store_true", help="run without the overlay")
+    p.add_argument("--overlay", action="store_true",
+                   help="show the on-screen HUD instead of notifications")
     args = p.parse_args(argv)
 
     if args.calibrate:
@@ -382,6 +422,9 @@ def main(argv=None):
     if args.realtime and not os.environ.get("OPENAI_API_KEY"):
         print("--realtime needs OPENAI_API_KEY. Falling back to spoken commands.\n")
         args.realtime = False
+    if args.vision and not os.environ.get("OPENAI_API_KEY"):
+        print("--vision needs OPENAI_API_KEY. Falling back to spoken commands.\n")
+        args.vision = False
     if args.chat:
         from .local import pick_model
         if pick_model()[0] is None:
@@ -389,74 +432,89 @@ def main(argv=None):
                   "Falling back to spoken commands.\n")
             args.chat = False
 
-    miko, detector, capture, ring, side_cfg = build(args)
+    nok, detector, capture, ring, side_cfg = build(args)
 
     # Pay the screenshot stack's import + device-open cost now (~250ms) so the
     # first knock is as fast as every later one.
     from . import screen
     screen.warmup()
 
+    # The default is no window at all: a tray icon, and a balloon when
+    # something happens. The HUD is opt-in via --overlay.
     overlay = None
-    if not args.no_overlay:
+    tray = None
+    if args.overlay:
         from .overlay import Overlay
         overlay = Overlay()
-        miko.on_state = overlay.set_state
-        miko.on_level = overlay.set_level
+        nok.on_state = overlay.set_state
+        nok.on_level = overlay.set_level
+    else:
+        from .notify import Tray
+        tray = Tray()
+        nok.on_notify = tray.balloon
 
     stop_event = threading.Event()
     ioi = IOIStateMachine(
-        max_ioi=float(os.environ.get("MIKO_MAX_IOI", "0.6")),
-        close_out=float(os.environ.get("MIKO_CLOSE_OUT", "0.75")),
+        max_ioi=float(os.environ.get("NOK_MAX_IOI", "0.6")),
+        close_out=float(os.environ.get("NOK_CLOSE_OUT", "0.75")),
     )
 
     def _capture_died(reason):
         # SLEEPING renders as invisible, so without this a dead microphone is
         # pixel-identical to a healthy idle app -- you knock, nothing happens,
         # and nothing anywhere says why.
-        print(f"\n  MIKO has gone deaf: {reason}", file=sys.stderr)
+        print(f"\n  NOK has gone deaf: {reason}", file=sys.stderr)
         print("  The microphone stream stopped and could not be reopened.",
               file=sys.stderr)
         print("  Reconnect the mic (or free it from another app) and restart.\n",
               file=sys.stderr)
-        miko.set_state(ERROR, "microphone lost")
+        nok.set_state(ERROR, "microphone lost")
 
     capture.on_error = _capture_died
     capture.start()
     detector_thread = threading.Thread(
         target=detector.run, args=(ring, ioi, stop_event),
-        kwargs={"on_wake": miko.on_wake}, daemon=True,
+        kwargs={"on_wake": nok.on_wake}, daemon=True,
     )
     detector_thread.start()
 
-    print("MIKO is listening.\n")
-    print(bindings.describe(side_cfg.enabled, agent_enabled=not args.no_agent))
-    if not args.no_agent and not args.chat and not args.realtime:
+    agent_label = "read my screen" if args.vision else "speak a command"
+    print("NOK is listening.\n")
+    print(bindings.describe(side_cfg.enabled, agent_enabled=not args.no_agent,
+                            fav_app=args.fav, agent_label=agent_label))
+    if not args.no_agent and not args.chat and not args.realtime and not args.vision:
         print("\n  after a triple knock, say things like:")
         print('    "open spotify"        "take a screenshot"')
         print('    "pause"  "next track"  "volume up"  "mute"')
         print('    "type hello world"')
+    if tray is not None and not tray.alive:
+        print("\n  (no tray icon available -- confirmations print here instead)")
     print("\nCtrl-C to quit.")
 
-    loop_thread = threading.Thread(target=lambda: asyncio.run(miko.run()), daemon=True)
+    loop_thread = threading.Thread(target=lambda: asyncio.run(nok.run()), daemon=True)
     loop_thread.start()
 
-    _watch_threads(miko, stop_event,
+    _watch_threads(nok, stop_event,
                    {"detector": detector_thread, "agent loop": loop_thread})
 
     try:
         if overlay is not None:
             overlay.run()
+        elif tray is not None:
+            tray.run()   # owns the Win32 message loop for the icon
         else:
             while True:
                 time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     finally:
-        miko.stop()
+        nok.stop()
         stop_event.set()
         capture.stop()
         if overlay is not None:
             overlay.close()
+        if tray is not None:
+            tray.close()
     return 0
 
 

@@ -1,7 +1,7 @@
 """Fully local agent: no API key, no account, no network.
 
 Implements the same three-method interface as RealtimeSession (`run`, `levels`,
-`request_stop`) so `app.Miko` cannot tell them apart. Pick one at startup.
+`request_stop`) so `app.Nok` cannot tell them apart. Pick one at startup.
 
     triple-knock
         |
@@ -71,7 +71,7 @@ def next_gate(measured):
     Recalibrating from scratch every single turn is what made endpointing
     brittle. In a quiet solo room a 350ms sample is stable, so it looked fine;
     in a live room it swings hard, and the gate swung with it. Too high and
-    speech never crossed it -- the turn was silently discarded and MIKO just
+    speech never crossed it -- the turn was silently discarded and NOK just
     looked like it hadn't heard you, which is the failure mode that ate the
     Build Week demo. Smoothing plus a ceiling means a loud room degrades the
     gate instead of switching it off.
@@ -89,8 +89,8 @@ def next_gate(measured):
         gate = MAX_GATE
     return gate
 
-OLLAMA_URL = os.environ.get("MIKO_OLLAMA_URL", "http://localhost:11434")
-TEXT_MODEL = os.environ.get("MIKO_TEXT_MODEL", "")
+OLLAMA_URL = os.environ.get("NOK_OLLAMA_URL", "http://localhost:11434")
+TEXT_MODEL = os.environ.get("NOK_TEXT_MODEL", "")
 
 # Vision models in preference order. Reading a SCREEN is not the same task as
 # describing a photo: it is OCR plus UI layout understanding, and general
@@ -110,16 +110,16 @@ VISION_PREFERENCE = [
     "bakllava",
     "moondream",
 ]
-VISION_MODEL = os.environ.get("MIKO_VISION_MODEL", "")
+VISION_MODEL = os.environ.get("NOK_VISION_MODEL", "")
 
 # Captioning models that cannot reliably read UI text. Usable, but the user
 # should be told not to trust them about screen contents.
 UNRELIABLE_ON_SCREENS = {"moondream", "bakllava"}
 
-WHISPER_SIZE = os.environ.get("MIKO_WHISPER", "base.en")
+WHISPER_SIZE = os.environ.get("NOK_WHISPER", "base.en")
 
 SYSTEM_PROMPT = (
-    "You are MIKO, a desktop assistant summoned by knocking on the laptop. "
+    "You are NOK, a desktop assistant summoned by knocking on the laptop. "
     "You are shown the user's screen. Answer in one or two short sentences, "
     "spoken aloud, so no markdown and no lists. Be direct."
 )
@@ -321,7 +321,7 @@ def synthesize(text):
     """
     import pyttsx3
 
-    path = os.path.join(tempfile.gettempdir(), f"miko-tts-{os.getpid()}.wav")
+    path = os.path.join(tempfile.gettempdir(), f"nok-tts-{os.getpid()}.wav")
     engine = pyttsx3.init()
     engine.setProperty("rate", 185)
     engine.save_to_file(text, path)

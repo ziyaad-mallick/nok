@@ -7,9 +7,9 @@ and silence.
 """
 import numpy as np
 
-from miko.calibrate import analyze_recording, compute_thresholds
-from miko.detector import DetectorConfig, KnockDetector
-from miko.ring_buffer import SAMPLE_RATE
+from nok.calibrate import analyze_recording, compute_thresholds
+from nok.detector import DetectorConfig, KnockDetector
+from nok.ring_buffer import SAMPLE_RATE
 from scripts.replay_harness import (
     synth_knock,
     synth_silence,

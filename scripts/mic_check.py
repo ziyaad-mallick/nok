@@ -1,13 +1,13 @@
-"""Mic doctor: is the microphone actually delivering audio to Miko?
+"""Mic doctor: is the microphone actually delivering audio to Nok?
 
-Opens the SAME device Miko uses (calibration.json's device_index, else the
+Opens the SAME device Nok uses (calibration.json's device_index, else the
 system default) at 16kHz and prints a live level meter for ~6 seconds. Knock
 on the chassis and say a few words while it runs.
 
     .venv\\Scripts\\python.exe scripts\\mic_check.py
 
 Verdict:
-  - peak stays near 0.000  -> the mic is SILENT. Miko can't hear anything and
+  - peak stays near 0.000  -> the mic is SILENT. Nok can't hear anything and
     no amount of tuning will help. Fix it in Windows (see the printed hints):
     unmute the mic, disable "audio enhancements" for it, allow desktop apps
     mic access, and close any app (Teams/Zoom/browser) holding the mic.
@@ -58,15 +58,15 @@ def main():
 
     print(f"MAX PEAK over the whole run: {peak:.4f}")
     if peak < 0.01:
-        print("VERDICT: mic is SILENT. This is a Windows capture problem, not Miko.")
+        print("VERDICT: mic is SILENT. This is a Windows capture problem, not Nok.")
         print("  1. Sound settings -> Input -> pick 'Microphone Array', raise volume, unmute.")
         print("  2. Device properties -> disable ALL 'audio enhancements' for it.")
         print("  3. Privacy & security -> Microphone -> let desktop apps access it.")
         print("  4. Close Teams/Zoom/any browser tab that may hold the mic, then retry.")
         print("  5. Check the physical/Fn mic-mute key.")
     else:
-        print("VERDICT: mic is delivering audio. If Miko still doesn't wake, rerun")
-        print("  'python -m miko' and knock — the session log will show onsets now.")
+        print("VERDICT: mic is delivering audio. If Nok still doesn't wake, rerun")
+        print("  'python -m nok' and knock — the session log will show onsets now.")
 
 
 if __name__ == "__main__":
