@@ -37,7 +37,7 @@ Nok is on, and one place to quit it.
 ## The 60-second version
 
 ```bash
-git clone <repo> && cd nok
+git clone https://github.com/ziyaad-mallick/nok && cd nok
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt
 .venv/Scripts/python -m nok --calibrate     # teach it your knock, once
@@ -262,7 +262,7 @@ the same physical size at 100% and 150% scaling.
 ## Install
 
 ```bash
-git clone <repo> && cd nok
+git clone https://github.com/ziyaad-mallick/nok && cd nok
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt
 ```
