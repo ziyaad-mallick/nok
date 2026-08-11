@@ -1,5 +1,7 @@
 # Nok
 
+[![tests](https://github.com/ziyaad-mallick/nok/actions/workflows/tests.yml/badge.svg)](https://github.com/ziyaad-mallick/nok/actions/workflows/tests.yml)
+
 **Knock twice on your laptop. Something happens.**
 
 No hotkey. No wake word. No window to find. You knock on the case with your knuckles — the same way
