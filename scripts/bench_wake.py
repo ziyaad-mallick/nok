@@ -44,9 +44,13 @@ no claim about the two ends:
      removes it, and it dominates both A and B by orders of magnitude. Reported
      in audio seconds, derived from sample counts, so it is exact.
 
-     Measured against the tuning `nok.app` ships (APP_CLOSE_OUT below), not
-     `IOIStateMachine`'s looser library defaults, so that C is the wait a real
-     user of Nok actually experiences.
+     Measured against the tuning `nok.app.ioi_settings()` resolves -- including
+     the NOK_CLOSE_OUT / NOK_MAX_IOI overrides -- not `IOIStateMachine`'s looser
+     library defaults, so that C is the wait a real user of *this* install
+     experiences. The reported figure is `close_out` plus 0-32ms, because the
+     decision cannot land before the 512-sample block in flight completes; the
+     onset phase is swept across the block grid so that spread is visible
+     instead of collapsed to one point.
 
 A is deterministic in what it computes -- fixtures are seeded -- but A and B are
 both wall-clock, so their percentiles move with CPU load. B in particular is
@@ -58,9 +62,10 @@ Excluded, and not measurable here: microphone capture latency (driver + device
 buffer), the ring buffer's own fill delay, and the execution time of the real
 action (screenshot capture, media key, app launch).
 
-Not free of side effects: each dispatch drives `Nok.set_state`, which writes a
-JSONL session log under the repo root. That is disk I/O inside the timed window
-for segment B, and it leaves files behind in a fresh clone.
+Not free of side effects: each dispatch drives `Nok.set_state` -> `log_event`,
+which enqueues a record onto a `QueueHandler`. The write and flush happen on the
+`QueueListener` thread, so the timed window for B pays a queue put and not the
+disk. It does leave JSONL files in `session-logs/` (gitignored) behind.
 
 Fixtures: synthetic. The knock generator is `scripts.replay_harness.synth_knock`
 -- the same one the replay harness and its tests use -- so this needs no
@@ -79,7 +84,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nok.app import GESTURE_POLL_S, SLEEPING, Nok  # noqa: E402
+from nok.app import GESTURE_POLL_S, SLEEPING, Nok, ioi_settings  # noqa: E402
 from nok.detector import DetectorConfig, KnockDetector  # noqa: E402
 from nok.ioi import DOUBLE_TAP, TRIPLE_TAP, IOIStateMachine  # noqa: E402
 from nok.ring_buffer import SAMPLE_RATE  # noqa: E402
@@ -88,27 +93,39 @@ from scripts.replay_harness import _place, synth_knock, synth_silence  # noqa: E
 DEFAULT_ITERS = 200
 WITHIN_S = 0.2      # gap between the two taps of the pair
 LEAD_S = 0.3        # silence before the pair (lets the detector EMA warm up)
-TAIL_S = 1.2        # silence after (> close_out, so the chain finalizes)
 
-# The IOI tuning the *application* ships, not the library defaults. `nok.app`
-# builds its state machine with these (app.py, NOK_MAX_IOI / NOK_CLOSE_OUT),
-# while `IOIStateMachine()`'s own defaults are looser (MAX_IOI 0.45,
-# CLOSE_OUT 0.60). Benchmarking the defaults would report a close-out window
-# no user of Nok ever waits, so segment C is measured against what ships.
-APP_MAX_IOI = 0.6
-APP_CLOSE_OUT = 0.75
+# Segment C is measured against the tuning the *application* resolves --
+# `nok.app.ioi_settings()`, which reads NOK_MAX_IOI / NOK_CLOSE_OUT -- and not
+# against `IOIStateMachine()`'s looser library defaults (MAX_IOI 0.45,
+# CLOSE_OUT 0.60). Benchmarking the library defaults would report a window no
+# user of Nok ever waits; hardcoding a copy of the app's defaults here would
+# report the wrong window for anyone who has set the environment variable.
+IOI_SETTINGS = ioi_settings()
+
+# Silence after the pair. Must exceed close_out or the chain never finalizes
+# inside the fixture and every iteration fails, so it is derived rather than
+# fixed -- NOK_CLOSE_OUT can be set to anything.
+TAIL_S = IOI_SETTINGS["close_out"] + 0.45
 
 
-def build_double_tap(seed):
+def build_double_tap(seed, phase_samples=0):
     """One isolated double-tap on a quiet noise floor.
 
     Returns (samples, second_onset_index) where the index is the first sample of
     the second knock -- the point from which segment A is timed.
+
+    `phase_samples` shifts the pair within the block grid. A real knock lands at
+    an arbitrary offset inside the 512-sample block the detector happens to be
+    filling, and the decision cannot arrive until that block completes, so the
+    close-out window a user waits is `close_out` plus 0-32ms of quantization.
+    Pinning the phase at zero would report a single point from that range 200
+    times over and print it as a distribution -- p50 and p95 identical, which
+    looks like precision and is actually one measurement repeated.
     """
     total = int((LEAD_S + WITHIN_S + TAIL_S) * SAMPLE_RATE)
     track = synth_silence(total, seed=seed)
-    first = int(LEAD_S * SAMPLE_RATE)
-    second = int((LEAD_S + WITHIN_S) * SAMPLE_RATE)
+    first = int(LEAD_S * SAMPLE_RATE) + phase_samples
+    second = int((LEAD_S + WITHIN_S) * SAMPLE_RATE) + phase_samples
     _place(track, synth_knock(SAMPLE_RATE, seed=seed), first)
     _place(track, synth_knock(SAMPLE_RATE, seed=seed + 1), second)
     return track, second
@@ -121,7 +138,7 @@ def run_once(samples, second_onset_index):
     failed iteration rather than silently averaging it away.
     """
     det = KnockDetector(DetectorConfig(samplerate=SAMPLE_RATE))
-    machine = IOIStateMachine(max_ioi=APP_MAX_IOI, close_out=APP_CLOSE_OUT)
+    machine = IOIStateMachine(**IOI_SETTINGS)
     bs = det.config.blocksize
     n_blocks = samples.shape[0] // bs
     start_block = second_onset_index // bs
@@ -240,7 +257,10 @@ def main():
     # --- A: detect -> decide -------------------------------------------------
     compute_ms, closeout_s, failures = [], [], 0
     for i in range(n):
-        samples, idx = build_double_tap(seed=i * 7)
+        # Sweep the onset across one full block so C reports the real
+        # quantization spread rather than one alignment repeated n times.
+        phase = (i * 37) % DetectorConfig(samplerate=SAMPLE_RATE).blocksize
+        samples, idx = build_double_tap(seed=i * 7, phase_samples=phase)
         result = run_once(samples, idx)
         if result is None:
             failures += 1
@@ -302,10 +322,13 @@ def main():
 
     # --- C: the design's own wait -------------------------------------------
     print("C. close-out window (signal time, second onset -> DOUBLE_TAP)")
+    print(f"    min   : {min(closeout_s) * 1000:.1f} ms")
     print(f"    p50   : {pct(closeout_s, 50) * 1000:.1f} ms")
+    print(f"    p95   : {pct(closeout_s, 95) * 1000:.1f} ms")
     print(f"    max   : {max(closeout_s) * 1000:.1f} ms")
-    print(f"    note  : close_out = {APP_CLOSE_OUT * 1000:.0f} ms, the value nok.app ships "
-          f"(override with NOK_CLOSE_OUT); this is a deliberate wait, not compute.")
+    print(f"    note  : close_out = {IOI_SETTINGS['close_out'] * 1000:.0f} ms as resolved by "
+          f"nok.app.ioi_settings() (set NOK_CLOSE_OUT to change it); the spread above "
+          f"is block quantization. A deliberate wait, not compute.")
     return 0
 
 

@@ -11,17 +11,18 @@ one.
 Windows 11, Python 3.11+.
 
 ```
-  knock knock  (right side)  →  screenshot        instant · local · no network
-  knock knock  (left side)   →  play / pause      instant · local · no network
+  knock knock  (right side)  →  screenshot        ~0.8s · local · no network
+  knock knock  (left side)   →  play / pause      ~0.8s · local · no network
                              →  or open an app you name with --fav
 ```
 
-That is the whole product, and it needs **no API key, no model, no account, and no internet**. The
-compute really is trivial — about 22ms from the second knock to the action firing, and most of that
-is a 20ms polling period. But what you actually *wait* is about **780ms**, and that wait is
-deliberate: the gesture is not finished until the machine has heard silence, because a double-tap
-has to stay open long enough to become a triple. Details and the exact numbers are under
-[Latency](#latency); run `python scripts/bench_wake.py` to reproduce them yourself.
+That is the whole product, and it needs **no API key, no model, no account, and no internet**.
+Deciding that a knock happened costs about 0.13ms; getting that decision to the action adds ~21ms,
+nearly all of which is the event loop's own 20ms polling period. But what you actually *wait* is
+about **790ms**, and that wait is deliberate: the gesture is not finished until the machine has
+heard silence, because a double-tap has to stay open long enough to become a triple. Numbers,
+spreads and exclusions are under [Latency](#latency); run `python scripts/bench_wake.py` to
+reproduce them.
 
 There is also a third gesture, and it is optional:
 
@@ -404,44 +405,55 @@ still failed, because ctypes defaults an undeclared return type to `c_int` and q
 python scripts/bench_wake.py           # 200 iterations
 ```
 
-`numpy` is the only package it needs, and it wants an otherwise idle machine. No microphone, no
-API key, no network — the agent path is never constructed, so there is nothing in the measured
-code that could reach a model. The run below is from one Windows 11 machine, Python 3.11.9, and
-the numbers in the first two rows will move on yours.
+`numpy` is the only package it needs. The harness opens no microphone and reads no API key, and it
+makes no outbound connection — asyncio's own loopback socketpair is the only socket in the process.
 
-| | p50 | p95 | what it is |
-|---|---|---|---|
-| **A** detect → decide | 0.13 ms | 0.25 ms | the compute: 512-sample blocks through the classifier and the IOI state machine |
-| **B** decide → dispatch | 22.1 ms | 25.6 ms | handoff through the real asyncio loop and gesture queue, to a stubbed action |
-| **A+B** | 22.3 ms | 25.8 ms | detection to dispatch |
-| **C** close-out window | 780 ms | 780 ms | the wait before a double-tap is *final* |
+Five runs of `-n 200` on one Windows 11 machine, Python 3.11.9, otherwise idle. Ranges are the
+spread **across** those runs, because a single run of a wall-clock benchmark is a sample and not a
+result:
 
-The honest headline is C, and it is the one number here that is not about this machine. Nok holds
-for `close_out` seconds of silence after your last tap before it commits to a decision, because
-until that silence arrives a double-tap might still be growing into a triple. `nok.app` ships
-`close_out` at 750ms; the 780ms above is that plus the 32ms audio block the decision lands on. No
-amount of CPU removes it. Tune it with `NOK_CLOSE_OUT` if you never use the triple gesture, and it
-gets shorter — at the cost of the triple gesture.
+| | p50 | p95 | max | what it is |
+|---|---|---|---|---|
+| **A** detect → decide | 0.12–0.17 ms | 0.23–0.38 ms | 0.31–3.72 ms | the compute: 512-sample blocks through the classifier and the IOI state machine |
+| **B** decide → dispatch | 20.4–22.0 ms | 25.5–30.5 ms | 37.7–**175.9** ms | handoff through the real asyncio loop and gesture queue, to a stubbed action |
+| **C** close-out window | 786.6 ms | 801.3 ms | 804.0 ms | the wait before a double-tap is *final* |
 
-B deserves a caveat rather than a boast. The loop polls every 20ms (`GESTURE_POLL_S`), so a gesture
-waits 0–20ms for the next poll depending on where in the period it lands. That p50 is mostly the OS
-scheduler, not Nok, and on a loaded machine it will read higher. Treat B as "bounded by the poll
-period," not as a measured property of the software.
+**C is the honest headline, and the only number here that is not about this machine.** It was
+byte-identical across all five runs, because it is derived from sample counts rather than a clock.
+Nok holds for `close_out` seconds of silence after your last tap before committing to a decision:
+until that silence arrives, a double-tap might still be growing into a triple. `close_out` is 750ms;
+the 770–804ms spread is that plus 0–32ms, because the decision cannot land before the 512-sample
+audio block in flight finishes. The benchmark sweeps the knock's onset across the block grid so that
+spread is visible instead of collapsed to a single repeated point. No amount of CPU removes any of
+it. `NOK_CLOSE_OUT` changes it, and the benchmark reads the same environment variable the app does,
+so setting it changes the number the tool reports.
+
+**B's max is the number worth asking about.** The p50 is boring — 20ms of it is `GESTURE_POLL_S`,
+the loop's poll period, so a gesture waits 0–20ms for the next poll depending on where it lands. But
+the tail reached 175.9ms in one run of five. That is the Windows scheduler descheduling a thread,
+not Nok doing work, and it is exactly the kind of thing a p50 hides. B is best read as "bounded
+below by the poll period, with a tail that belongs to the OS."
+
+There is no combined A+B row here. The benchmark prints one, but it sums two independently sampled
+distributions element-wise, which pairs iteration *i* of A with iteration *i* of B for no reason. A
+is 0.6% of B; B is the number.
 
 What this **excludes**, and cannot measure without a person knocking on a real laptop: microphone
 capture latency (driver plus device buffer), the ring buffer's own fill delay, and the action's own
-execution — the screenshot capture or the media key. Fixtures are synthetic, generated by the same
-seeded knock generator the replay harness uses, so this is a repeatable double-tap and not a
-recording of a real one. Detection *accuracy* on real knocks is a different question and this
-benchmark does not touch it.
+execution — the screenshot capture or the media key. **So 790ms is not the end-to-end latency of
+Nok.** It is the part that can be measured without hardware, and the true figure is larger by an
+unmeasured amount.
+
+Fixtures are synthetic, generated by the same seeded knock generator the replay harness uses. The
+benchmark reports `0/200 missed`, and that is **not** a detection-accuracy result — it is one
+generator being recognised by a detector tuned for it, 200 times. Whether Nok detects *your* knock,
+on *your* laptop, through *your* microphone is a different question and this benchmark does not
+touch it.
 
 The full statement of what the harness can and cannot claim is the module docstring at the top of
-`scripts/bench_wake.py`; it is more careful than this section and worth reading before quoting any
-of these numbers.
+`scripts/bench_wake.py`.
 
-An earlier version of this README claimed Nok "answers in under 200ms." That was wrong — not
-because the code was slow, but because it measured the wrong segment. The compute was never the
-thing you wait for.
+An earlier version of this README claimed Nok "answers in under 200ms." That was wrong.
 
 ---
 

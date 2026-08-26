@@ -55,6 +55,17 @@ ACTING = "ACTING"
 ERROR = "ERROR"
 
 GESTURE_POLL_S = 0.02
+
+# The IOI tuning this application runs with, which is looser than
+# IOIStateMachine's own library defaults. Exposed as a function rather than
+# constants so that anything measuring the app -- scripts/bench_wake.py --
+# resolves the same environment the app does, instead of hardcoding a copy that
+# silently drifts and ignores the user's override.
+def ioi_settings() -> dict:
+    return {
+        "max_ioi": float(os.environ.get("NOK_MAX_IOI", "0.6")),
+        "close_out": float(os.environ.get("NOK_CLOSE_OUT", "0.75")),
+    }
 SESSION_IDLE_TIMEOUT_S = 120.0
 
 
@@ -454,10 +465,7 @@ def main(argv=None):
         nok.on_notify = tray.balloon
 
     stop_event = threading.Event()
-    ioi = IOIStateMachine(
-        max_ioi=float(os.environ.get("NOK_MAX_IOI", "0.6")),
-        close_out=float(os.environ.get("NOK_CLOSE_OUT", "0.75")),
-    )
+    ioi = IOIStateMachine(**ioi_settings())
 
     def _capture_died(reason):
         # SLEEPING renders as invisible, so without this a dead microphone is
