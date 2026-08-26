@@ -9,3 +9,4 @@ probe-results/
 calibration.json
 scratch/
 shiplog/
+HANDOFF-*.md
