@@ -1,7 +1,16 @@
 """Measure the delegatable segment of the wake path: audio in -> action out.
 
-    python -m scripts.bench_wake            # 200 iterations
-    python -m scripts.bench_wake -n 500
+    python scripts/bench_wake.py            # 200 iterations
+    python scripts/bench_wake.py -n 500
+
+The script-path form above works from any directory (the `sys.path` insert below
+resolves the repo root from `__file__`). `python -m scripts.bench_wake` also
+works, but only from the repo root -- there is no `scripts/__init__.py`, so `-m`
+depends on the cwd being on `sys.path`. Prefer the script-path form.
+
+numpy is the only third-party package this needs. The full `requirements.txt`
+installs the app's audio, vision and agent stacks, none of which are imported on
+the measured path.
 
 What this measures, exactly
 ---------------------------
@@ -35,9 +44,23 @@ no claim about the two ends:
      removes it, and it dominates both A and B by orders of magnitude. Reported
      in audio seconds, derived from sample counts, so it is exact.
 
+     Measured against the tuning `nok.app` ships (APP_CLOSE_OUT below), not
+     `IOIStateMachine`'s looser library defaults, so that C is the wait a real
+     user of Nok actually experiences.
+
+A is deterministic in what it computes -- fixtures are seeded -- but A and B are
+both wall-clock, so their percentiles move with CPU load. B in particular is
+bounded below by the loop's 20 ms poll period and is dominated by the OS
+scheduler; treat it as "0-20 ms, bounded by GESTURE_POLL_S" rather than as a
+constant. Only C is machine-independent. Run on an otherwise idle machine.
+
 Excluded, and not measurable here: microphone capture latency (driver + device
 buffer), the ring buffer's own fill delay, and the execution time of the real
 action (screenshot capture, media key, app launch).
+
+Not free of side effects: each dispatch drives `Nok.set_state`, which writes a
+JSONL session log under the repo root. That is disk I/O inside the timed window
+for segment B, and it leaves files behind in a fresh clone.
 
 Fixtures: synthetic. The knock generator is `scripts.replay_harness.synth_knock`
 -- the same one the replay harness and its tests use -- so this needs no
@@ -47,7 +70,6 @@ still not used: a benchmark needs one isolated, repeatable double-tap, not the
 """
 import argparse
 import asyncio
-import statistics
 import sys
 import threading
 import time
@@ -67,6 +89,14 @@ DEFAULT_ITERS = 200
 WITHIN_S = 0.2      # gap between the two taps of the pair
 LEAD_S = 0.3        # silence before the pair (lets the detector EMA warm up)
 TAIL_S = 1.2        # silence after (> close_out, so the chain finalizes)
+
+# The IOI tuning the *application* ships, not the library defaults. `nok.app`
+# builds its state machine with these (app.py, NOK_MAX_IOI / NOK_CLOSE_OUT),
+# while `IOIStateMachine()`'s own defaults are looser (MAX_IOI 0.45,
+# CLOSE_OUT 0.60). Benchmarking the defaults would report a close-out window
+# no user of Nok ever waits, so segment C is measured against what ships.
+APP_MAX_IOI = 0.6
+APP_CLOSE_OUT = 0.75
 
 
 def build_double_tap(seed):
@@ -91,7 +121,7 @@ def run_once(samples, second_onset_index):
     failed iteration rather than silently averaging it away.
     """
     det = KnockDetector(DetectorConfig(samplerate=SAMPLE_RATE))
-    machine = IOIStateMachine()
+    machine = IOIStateMachine(max_ioi=APP_MAX_IOI, close_out=APP_CLOSE_OUT)
     bs = det.config.blocksize
     n_blocks = samples.shape[0] // bs
     start_block = second_onset_index // bs
@@ -188,7 +218,7 @@ def summarize(name, values, unit="ms"):
     print(f"{name}")
     print(f"    n     : {len(values)}")
     print(f"    min   : {min(values):.4f} {unit}")
-    print(f"    p50   : {statistics.median(values):.4f} {unit}")
+    print(f"    p50   : {pct(values, 50):.4f} {unit}")
     print(f"    p95   : {pct(values, 95):.4f} {unit}")
     print(f"    max   : {max(values):.4f} {unit}")
 
@@ -272,10 +302,10 @@ def main():
 
     # --- C: the design's own wait -------------------------------------------
     print("C. close-out window (signal time, second onset -> DOUBLE_TAP)")
-    print(f"    p50   : {statistics.median(closeout_s) * 1000:.1f} ms")
+    print(f"    p50   : {pct(closeout_s, 50) * 1000:.1f} ms")
     print(f"    max   : {max(closeout_s) * 1000:.1f} ms")
-    print(f"    note  : IOIStateMachine.close_out = {IOIStateMachine().close_out * 1000:.0f} ms; "
-          f"this is a deliberate wait, not compute.")
+    print(f"    note  : close_out = {APP_CLOSE_OUT * 1000:.0f} ms, the value nok.app ships "
+          f"(override with NOK_CLOSE_OUT); this is a deliberate wait, not compute.")
     return 0
 
 
