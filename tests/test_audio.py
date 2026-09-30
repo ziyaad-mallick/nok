@@ -7,7 +7,12 @@ at the module seam, so it needs no microphone and no audio backend.
 import numpy as np
 import pytest
 
-from nok import audio
+# nok.audio imports sounddevice at module level. The tests fake it afterwards,
+# but the import itself needs the package installed (it is a declared dependency,
+# yet absent from a bare interpreter). Skip cleanly instead of erroring collection.
+pytest.importorskip("sounddevice", reason="sounddevice not installed")
+
+from nok import audio  # noqa: E402
 from nok.ring_buffer import RingBuffer
 
 
